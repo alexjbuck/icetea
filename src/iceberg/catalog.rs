@@ -1,6 +1,7 @@
 //! Catalog management for multiple Iceberg catalogs
 
 use crate::config::CatalogConfig;
+use crate::iceberg::catalog_provider::IcebergCatalogProvider;
 use anyhow::{Context, Result};
 use datafusion::catalog::CatalogProvider;
 use iceberg::{Catalog, CatalogBuilder};
@@ -49,20 +50,12 @@ impl CatalogManager {
 
                 let iceberg_catalog: Arc<dyn Catalog> = Arc::new(rest_catalog);
 
-                // TODO: DataFusion integration
-                // datafusion_iceberg 0.7 is incompatible with iceberg 0.7
-                // It was built against the old iceberg_rust crate
-                // Options:
-                // 1. Wait for datafusion_iceberg to be updated
-                // 2. Implement DataFusionTable provider directly
-                // 3. Use REST API + custom table provider
-                //
-                // let df_catalog = IcebergCatalog::new_sync(iceberg_catalog.clone(), None);
-                // let df_catalog: Arc<dyn CatalogProvider> = Arc::new(df_catalog);
+                // Create DataFusion catalog provider wrapping the Iceberg catalog
+                let df_catalog_provider = Arc::new(IcebergCatalogProvider::new(iceberg_catalog.clone()));
 
-                // Store catalog
+                // Store both catalogs
                 self.catalogs.insert(name.clone(), iceberg_catalog);
-                // self.df_catalogs.insert(name, df_catalog);
+                self.df_catalogs.insert(name.clone(), df_catalog_provider);
 
                 Ok(())
             }

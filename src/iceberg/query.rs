@@ -1,9 +1,8 @@
 //! SQL query execution using DataFusion
 
-use crate::iceberg::table_provider::IcebergTableProvider;
 use anyhow::{Context, Result};
+use datafusion::catalog::CatalogProvider;
 use datafusion::prelude::*;
-use iceberg::table::Table as IcebergTable;
 use std::sync::Arc;
 
 /// Manages SQL query execution against Iceberg tables
@@ -18,19 +17,15 @@ impl QueryExecutor {
         Self { ctx }
     }
 
-    /// Register an Iceberg table for querying
-    pub async fn register_table(
+    /// Register an Iceberg catalog with DataFusion
+    /// After registration, tables can be queried as: catalog.namespace.table
+    pub fn register_catalog(
         &self,
-        name: &str,
-        table: Arc<IcebergTable>,
+        catalog_name: &str,
+        catalog_provider: Arc<dyn CatalogProvider>,
     ) -> Result<()> {
-        let provider = IcebergTableProvider::new(table)
-            .context("Failed to create Iceberg table provider")?;
-
         self.ctx
-            .register_table(name, Arc::new(provider))
-            .context("Failed to register table with DataFusion")?;
-
+            .register_catalog(catalog_name, catalog_provider);
         Ok(())
     }
 

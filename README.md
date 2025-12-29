@@ -176,13 +176,22 @@ This is a greenfield project in active development. The current implementation p
 
 **Note**: Now using iceberg-rust v0.7 with proper REST catalog integration. The `RestCatalogBuilder` pattern is used to create catalog connections with full configuration support.
 
-**DataFusion Integration**: Implemented a custom `TableProvider` that bridges Iceberg tables to DataFusion. The implementation includes:
-- Full Iceberg-to-Arrow schema conversion supporting all primitive types, structs, lists, and maps
-- `IcebergTableProvider` implementing DataFusion's `TableProvider` trait
-- `IcebergScanExec` execution plan for reading Iceberg data (scan implementation pending)
-- Registered tables can be queried via SQL through DataFusion's query engine
+**DataFusion Integration**: Implemented a complete catalog-level integration with DataFusion using custom providers:
 
-**Note**: The `datafusion_iceberg` v0.7 crate is incompatible with `iceberg` v0.7 (built against the older `iceberg_rust` crate), so we implemented our own custom integration.
+Architecture:
+- `IcebergCatalogProvider` - Wraps Iceberg catalogs as DataFusion catalog providers
+- `IcebergSchemaProvider` - Maps Iceberg namespaces to DataFusion schemas
+- `IcebergTableProvider` - Bridges individual Iceberg tables to DataFusion
+- Full Iceberg-to-Arrow schema conversion supporting all types (primitives, structs, lists, maps)
+
+This design leverages DataFusion's native catalog abstraction layer. After registering a catalog, tables can be queried using SQL:
+```sql
+SELECT * FROM catalog.namespace.table_name
+```
+
+DataFusion automatically discovers namespaces and tables through the provider interfaces, eliminating the need to manually register individual tables.
+
+**Note**: The `datafusion_iceberg` v0.7 crate is incompatible with `iceberg` v0.7 (built against the older `iceberg_rust` crate), so we implemented our own custom integration following DataFusion's catalog provider pattern.
 
 ## Contributing
 
