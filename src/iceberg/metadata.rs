@@ -56,13 +56,10 @@ impl TableMetadata {
         // Extract partition spec
         let partition_spec = metadata
             .default_partition_spec()
-            .map(|spec| {
-                spec.fields()
-                    .iter()
-                    .map(|field| format!("{:?}", field))
-                    .collect()
-            })
-            .unwrap_or_default();
+            .fields()
+            .iter()
+            .map(|field| format!("{:?}", field))
+            .collect();
 
         // Extract sort order
         let sort_order = Vec::new(); // TODO: Fix sort order extraction once API is clear
@@ -75,24 +72,31 @@ impl TableMetadata {
 
         let snapshots: Vec<SnapshotInfo> = metadata
             .snapshots()
-            .map(|snapshot| {
-                let summary_map: HashMap<String, String> = snapshot
-                    .summary()
-                    .other
+            .filter_map(|snapshot| {
+                // Get summary and handle additional properties
+                let summary = snapshot.summary();
+                let mut summary_map: HashMap<String, String> = summary
+                    .additional_properties
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
 
-                SnapshotInfo {
+                // Add operation
+                summary_map.insert("operation".to_string(), format!("{:?}", summary.operation));
+
+                // Get timestamp, skip snapshot if it fails
+                let timestamp = snapshot.timestamp().ok()?;
+
+                Some(SnapshotInfo {
                     snapshot_id: snapshot.snapshot_id(),
                     parent_snapshot_id: snapshot.parent_snapshot_id(),
-                    timestamp_ms: snapshot.timestamp().timestamp_millis(),
+                    timestamp_ms: timestamp.timestamp_millis(),
                     operation: summary_map
                         .get("operation")
                         .cloned()
                         .unwrap_or_else(|| "unknown".to_string()),
                     summary: summary_map,
-                }
+                })
             })
             .collect();
 

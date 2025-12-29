@@ -167,13 +167,14 @@ src/
 This is a greenfield project in active development. The current implementation provides:
 
 - ✅ Complete project scaffolding
-- ✅ TUI framework setup
+- ✅ TUI framework setup (ratatui 0.30)
 - ✅ Configuration management
 - ✅ CLI interface
-- ⏳ Iceberg catalog integration (API in progress)
-- ⏳ DataFusion query execution (planned)
+- ✅ Upgraded to iceberg-rust 0.7 + datafusion 51
+- ⏳ Iceberg REST catalog integration (needs config setup)
+- ⏳ DataFusion query execution with datafusion_iceberg
 
-**Note**: The iceberg-rust crate (v0.3) is still evolving, and some APIs are not yet stable. Full catalog integration is pending API stabilization or using a newer version.
+**Note**: Now using iceberg-rust v0.7 with improved APIs. The REST catalog connection is stubbed and needs proper configuration implementation. The datafusion_iceberg crate provides table provider integration for query execution.
 
 ## Contributing
 

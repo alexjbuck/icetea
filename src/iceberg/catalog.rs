@@ -21,13 +21,18 @@ impl CatalogManager {
 
     /// Connect to a catalog using the provided configuration
     pub async fn connect(&mut self, _name: String, _config: &CatalogConfig) -> Result<()> {
-        // TODO: Implement catalog connection once the iceberg-rust API is stable
-        // The RestCatalogConfig struct has private fields and no public builder in version 0.3
-        // We need to either:
-        // 1. Use a newer version of iceberg-rust with a better API
-        // 2. Use a different approach to create the config
-        // For now, this is a placeholder to get the project compiling
-        anyhow::bail!("Catalog connection not yet implemented - iceberg-rust API in v0.3 has limitations")
+        // TODO: Implement REST catalog connection
+        // With iceberg 0.7, RestCatalog::new() is available but has a more complex
+        // configuration API. Integration options:
+        //
+        // 1. Use RestCatalog directly with proper config builder
+        // 2. Use datafusion_iceberg which provides table provider integration
+        // 3. Create a custom wrapper that handles the configuration
+        //
+        // For now, this is stubbed to allow the project to compile.
+        // See: https://docs.rs/iceberg-catalog-rest/0.7.0/
+        // See: https://docs.rs/datafusion_iceberg/0.7.0/
+        anyhow::bail!("REST catalog connection not yet fully implemented - needs proper config setup for iceberg 0.7")
     }
 
     /// Get a catalog by name

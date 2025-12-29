@@ -11,21 +11,22 @@ license = "MIT"
 clap = { version = "4.5", features = ["derive", "env"] }
 
 # TUI
-ratatui = "0.28"
-crossterm = "0.28"
+ratatui = "0.30"
+crossterm = "0.29"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
 # Iceberg & DataFusion
-iceberg = "0.3"
-iceberg-catalog-rest = "0.3"
-datafusion = "42"
+iceberg = "0.7"
+iceberg-catalog-rest = "0.7"
+datafusion = "51"
+datafusion_iceberg = "0.7"
 
 # Configuration
 figment = { version = "0.10", features = ["toml", "env"] }
 serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
+toml = "0.9"
 
 # Error handling & logging
 anyhow = "1.0"

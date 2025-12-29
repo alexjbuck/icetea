@@ -97,10 +97,14 @@ async fn run_tui(config: Config) -> Result<()> {
     Ok(())
 }
 
-async fn run_app<B: ratatui::backend::Backend>(
+async fn run_app<B>(
     terminal: &mut Terminal<B>,
     app: &mut App,
-) -> Result<()> {
+) -> Result<()>
+where
+    B: ratatui::backend::Backend,
+    B::Error: Send + Sync + 'static,
+{
     loop {
         terminal.draw(|f| ui::render(f, app))?;
 
