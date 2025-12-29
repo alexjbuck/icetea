@@ -1,5 +1,6 @@
 //! SQL query execution using DataFusion
 
+use crate::iceberg::table_provider::IcebergTableProvider;
 use anyhow::{Context, Result};
 use datafusion::prelude::*;
 use iceberg::table::Table as IcebergTable;
@@ -20,12 +21,16 @@ impl QueryExecutor {
     /// Register an Iceberg table for querying
     pub async fn register_table(
         &self,
-        _name: &str,
-        _table: Arc<IcebergTable>,
+        name: &str,
+        table: Arc<IcebergTable>,
     ) -> Result<()> {
-        // TODO: Implement Iceberg table adapter for DataFusion
-        // This requires creating a TableProvider implementation
-        // For now, this is a placeholder
+        let provider = IcebergTableProvider::new(table)
+            .context("Failed to create Iceberg table provider")?;
+
+        self.ctx
+            .register_table(name, Arc::new(provider))
+            .context("Failed to register table with DataFusion")?;
+
         Ok(())
     }
 

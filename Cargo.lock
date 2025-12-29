@@ -2631,12 +2631,14 @@ name = "icetea"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "clap",
  "crossterm",
  "datafusion",
  "datafusion_iceberg",
  "figment",
+ "futures",
  "iceberg",
  "iceberg-catalog-rest",
  "proptest",

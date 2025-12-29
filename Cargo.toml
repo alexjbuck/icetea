@@ -16,6 +16,8 @@ crossterm = "0.29"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
 
 # Iceberg & DataFusion
 iceberg = "0.7"
