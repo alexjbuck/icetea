@@ -2,13 +2,16 @@
 
 use crate::config::CatalogConfig;
 use anyhow::{Context, Result};
-use iceberg::Catalog;
+use datafusion::catalog::CatalogProvider;
+use iceberg::{Catalog, CatalogBuilder};
+use iceberg_catalog_rest::RestCatalogBuilder;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Manages multiple Iceberg catalog connections
 pub struct CatalogManager {
     catalogs: HashMap<String, Arc<dyn Catalog>>,
+    df_catalogs: HashMap<String, Arc<dyn CatalogProvider>>,
 }
 
 impl CatalogManager {
@@ -16,28 +19,70 @@ impl CatalogManager {
     pub fn new() -> Self {
         Self {
             catalogs: HashMap::new(),
+            df_catalogs: HashMap::new(),
         }
     }
 
     /// Connect to a catalog using the provided configuration
-    pub async fn connect(&mut self, _name: String, _config: &CatalogConfig) -> Result<()> {
-        // TODO: Implement REST catalog connection
-        // With iceberg 0.7, RestCatalog::new() is available but has a more complex
-        // configuration API. Integration options:
-        //
-        // 1. Use RestCatalog directly with proper config builder
-        // 2. Use datafusion_iceberg which provides table provider integration
-        // 3. Create a custom wrapper that handles the configuration
-        //
-        // For now, this is stubbed to allow the project to compile.
-        // See: https://docs.rs/iceberg-catalog-rest/0.7.0/
-        // See: https://docs.rs/datafusion_iceberg/0.7.0/
-        anyhow::bail!("REST catalog connection not yet fully implemented - needs proper config setup for iceberg 0.7")
+    pub async fn connect(&mut self, name: String, config: &CatalogConfig) -> Result<()> {
+        match config.catalog_type.as_str() {
+            "rest" => {
+                // Build properties for REST catalog
+                let mut props = HashMap::new();
+                props.insert("uri".to_string(), config.uri.clone());
+
+                if let Some(warehouse) = &config.warehouse {
+                    props.insert("warehouse".to_string(), warehouse.clone());
+                }
+
+                // Add all additional properties
+                for (key, value) in &config.properties {
+                    props.insert(key.clone(), value.clone());
+                }
+
+                // Create REST catalog using the builder
+                let builder = RestCatalogBuilder::default();
+                let rest_catalog = builder
+                    .load(name.clone(), props)
+                    .await
+                    .context("Failed to load REST catalog")?;
+
+                let iceberg_catalog: Arc<dyn Catalog> = Arc::new(rest_catalog);
+
+                // TODO: DataFusion integration
+                // datafusion_iceberg 0.7 is incompatible with iceberg 0.7
+                // It was built against the old iceberg_rust crate
+                // Options:
+                // 1. Wait for datafusion_iceberg to be updated
+                // 2. Implement DataFusionTable provider directly
+                // 3. Use REST API + custom table provider
+                //
+                // let df_catalog = IcebergCatalog::new_sync(iceberg_catalog.clone(), None);
+                // let df_catalog: Arc<dyn CatalogProvider> = Arc::new(df_catalog);
+
+                // Store catalog
+                self.catalogs.insert(name.clone(), iceberg_catalog);
+                // self.df_catalogs.insert(name, df_catalog);
+
+                Ok(())
+            }
+            _ => {
+                anyhow::bail!(
+                    "Unsupported catalog type: {}. Currently only 'rest' is supported.",
+                    config.catalog_type
+                );
+            }
+        }
     }
 
     /// Get a catalog by name
     pub fn get_catalog(&self, name: &str) -> Option<Arc<dyn Catalog>> {
         self.catalogs.get(name).cloned()
+    }
+
+    /// Get a DataFusion catalog provider by name
+    pub fn get_df_catalog(&self, name: &str) -> Option<Arc<dyn CatalogProvider>> {
+        self.df_catalogs.get(name).cloned()
     }
 
     /// List all connected catalog names
