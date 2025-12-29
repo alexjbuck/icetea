@@ -8,9 +8,11 @@ use datafusion::datasource::{TableProvider, TableType};
 use datafusion::error::Result as DataFusionResult;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
-use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan};
+use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties};
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
+use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use iceberg::table::Table as IcebergTable;
 use iceberg::spec::{PrimitiveType, Type as IcebergType};
 use std::any::Any;
@@ -173,14 +175,24 @@ struct IcebergScanExec {
     table: Arc<IcebergTable>,
     projected_schema: SchemaRef,
     metrics: ExecutionPlanMetricsSet,
+    properties: PlanProperties,
 }
 
 impl IcebergScanExec {
     fn new(table: Arc<IcebergTable>, projected_schema: SchemaRef) -> Self {
+        // Create plan properties for a single partition, bounded execution
+        let properties = PlanProperties::new(
+            EquivalenceProperties::new(projected_schema.clone()),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        );
+
         Self {
             table,
             projected_schema,
             metrics: ExecutionPlanMetricsSet::new(),
+            properties,
         }
     }
 }
@@ -205,9 +217,7 @@ impl ExecutionPlan for IcebergScanExec {
     }
 
     fn properties(&self) -> &datafusion::physical_plan::PlanProperties {
-        // TODO: Implement proper plan properties
-        // For now, return a placeholder
-        unimplemented!("properties() not yet implemented")
+        &self.properties
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
