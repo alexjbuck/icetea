@@ -1,0 +1,44 @@
+[package]
+name = "icetea"
+version = "0.1.0"
+edition = "2024"
+authors = ["icetea contributors"]
+description = "A TUI for connecting directly with Apache Iceberg catalogs"
+license = "MIT"
+
+[dependencies]
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# TUI
+ratatui = "0.30"
+crossterm = "0.29"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Iceberg & DataFusion
+iceberg = "0.7"
+iceberg-catalog-rest = "0.7"
+datafusion = "45"
+datafusion_iceberg = "0.7"
+
+# Configuration
+figment = { version = "0.10", features = ["toml", "env"] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.9"
+
+# Error handling & logging
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+chrono = "0.4"
+uuid = { version = "1.0", features = ["v4"] }
+
+[dev-dependencies]
+proptest = "1.5"

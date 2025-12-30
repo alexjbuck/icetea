@@ -1,0 +1,46 @@
+# IceTea Configuration Example
+# Copy this file to icetea.toml and modify as needed
+
+# Catalog configurations
+# You can define multiple catalogs
+
+[catalogs.local_rest]
+catalog_type = "rest"
+uri = "http://localhost:8181"
+warehouse = "s3://my-bucket/warehouse"
+
+# Additional catalog-specific properties
+[catalogs.local_rest.properties]
+# Authentication token (if required)
+# token = "your-auth-token-here"
+
+# AWS credentials (if using S3)
+# s3.access-key-id = "your-access-key"
+# s3.secret-access-key = "your-secret-key"
+# s3.region = "us-west-2"
+
+# Another example catalog
+[catalogs.production]
+catalog_type = "rest"
+uri = "https://prod-iceberg-catalog.example.com"
+warehouse = "s3://prod-data-lake/warehouse"
+
+[catalogs.production.properties]
+# Production-specific properties
+# token = "prod-token"
+
+# UI Configuration
+[ui]
+# Theme: "dark" or "light"
+theme = "dark"
+
+# How often to refresh catalog/table data (in seconds)
+refresh_interval = 30
+
+# Query Configuration
+[query]
+# Default query timeout in seconds
+timeout = 300
+
+# Maximum number of rows to fetch
+max_rows = 10000
