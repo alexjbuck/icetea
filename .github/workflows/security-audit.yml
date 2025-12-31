@@ -1,0 +1,78 @@
+name: Security Audit
+
+on:
+  # Run every Monday at 9:00 AM UTC
+  schedule:
+    - cron: '0 9 * * 1'
+
+  # Allow manual trigger
+  workflow_dispatch:
+
+  # Run on pushes to main branch
+  push:
+    branches:
+      - main
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+jobs:
+  security_audit:
+    name: Cargo Security Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        run: |
+          echo "::group::Cargo Audit Results"
+          cargo audit --color=always || true
+          echo "::endgroup::"
+
+      - name: Run cargo audit (fail on vulnerabilities)
+        run: |
+          # Only fail on actual vulnerabilities (not warnings)
+          cargo audit --deny warnings 2>&1 | tee audit.log
+
+          # Check if there are any vulnerabilities
+          if grep -q "error:" audit.log; then
+            echo "❌ Vulnerabilities found!"
+            exit 1
+          elif grep -q "warning:" audit.log; then
+            echo "⚠️  Warnings found (unmaintained dependencies)"
+            echo "This is informational only - not failing the build"
+            exit 0
+          else
+            echo "✅ No vulnerabilities found"
+            exit 0
+          fi
+
+      - name: Upload audit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-audit-results
+          path: audit.log
+          retention-days: 90
