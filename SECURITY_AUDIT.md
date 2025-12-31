@@ -4,238 +4,90 @@
 **Auditor:** Automated Security Analysis
 **Version:** 0.1.0
 **Codebase:** IceTea - Terminal User Interface for Apache Iceberg Catalogs
+**Application Type:** Command-Line Interface (CLI) Tool
 
 ---
 
 ## Executive Summary
 
-This security audit identified **CRITICAL** and **HIGH** severity vulnerabilities in the IceTea TUI application. The application is in early development and requires significant security hardening before production deployment. The most severe issues include:
+This security audit evaluates the IceTea TUI application through the lens of a **command-line tool** where users already have shell access to the host machine. This significantly changes the threat model compared to web applications or network services.
 
-- **SQL Injection vulnerability** (CRITICAL) - User input passed directly to query engine
-- **Plaintext credential storage** (CRITICAL) - Tokens and secrets in configuration files
-- **Unlimited input buffers** (HIGH) - Potential for memory exhaustion attacks
-- **Path traversal vulnerability** (HIGH) - Unvalidated config file paths
-- **Unmaintained dependencies** (MEDIUM) - Two transitive dependencies no longer maintained
+**Key Findings:**
+- **Overall Risk: LOW** - Appropriate security posture for a CLI tool
+- Most identified issues are **robustness concerns** rather than security vulnerabilities
+- Follows standard CLI tool patterns (similar to aws-cli, kubectl, psql, etc.)
+- Primary concern: Preventing accidental credential commits to version control
 
-**Overall Risk Assessment: HIGH - Not production ready**
+**Critical Action Items:**
+1. Add `icetea.toml` to `.gitignore` (MEDIUM severity)
+2. Monitor unmaintained dependencies (LOW severity)
+3. Add input limits for robustness (LOW severity)
 
----
-
-## Critical Vulnerabilities
-
-### 1. SQL Injection (CRITICAL)
-
-**Location:** `src/iceberg/query.rs:33-44`
-
-**Description:**
-User input from the query interface is passed directly to DataFusion's SQL engine without any validation, sanitization, or parameterization.
-
-**Vulnerable Code:**
-```rust
-pub async fn execute_query(&self, sql: &str) -> Result<QueryResults> {
-    let df = self.ctx.sql(sql).await  // User input passed directly!
-        .context("Failed to parse SQL query")?;
-```
-
-**Attack Scenario:**
-An attacker could execute arbitrary SQL commands including:
-- Data exfiltration: `SELECT * FROM sensitive_catalog.private_namespace.confidential_table`
-- Schema enumeration: `SHOW TABLES FROM catalog.namespace`
-- Resource exhaustion: Large cross-joins or infinite loops
-- Potential privilege escalation depending on DataFusion's capabilities
-
-**Impact:** Complete compromise of all accessible Iceberg catalog data
-
-**Recommendation:**
-1. Implement SQL query validation and sanitization
-2. Add an allowlist of permitted SQL keywords and patterns
-3. Enforce read-only query mode (disallow DDL/DML if possible)
-4. Add query timeouts and resource limits
-5. Implement query logging for audit trails
-6. Consider implementing a query approval workflow for sensitive catalogs
-
-**CVSS Score:** 9.8 (Critical)
+**Overall Risk Assessment: LOW - Ready for development/internal use with minor improvements**
 
 ---
 
-### 2. Plaintext Credential Storage (CRITICAL)
+## Threat Model: CLI Application
 
-**Location:** `src/config.rs`, `icetea.toml.example`
+### Security Context
 
-**Description:**
-Authentication tokens, AWS access keys, and secret keys are stored in plaintext configuration files without any encryption.
+**Key Assumption:** Users running IceTea already have:
+- Shell access to the host system
+- File system read/write permissions in their home directory
+- Ability to read configuration files (including credentials)
+- Access to execute arbitrary commands
+- Network access to catalog endpoints
 
-**Example from config file:**
-```toml
-[catalogs.local_rest.properties]
-token = "your-auth-token-here"
-s3.access-key-id = "your-access-key"
-s3.secret-access-key = "your-secret-key"
-```
+**Attack Surface:**
+- Local only (not exposed to network)
+- Single user per instance
+- Credentials protected by OS file permissions
+- No privilege escalation (runs with user's permissions)
 
-**Vulnerable Code Path:**
-```rust
-// config.rs:39 - Stored in HashMap
-pub properties: HashMap<String, String>,
+**Comparison to Similar Tools:**
+- AWS CLI (`~/.aws/credentials`) - plaintext credentials
+- Kubernetes (`~/.kube/config`) - plaintext certificates and tokens
+- PostgreSQL (`~/.pgpass`) - plaintext passwords
+- Git (`~/.gitconfig`, `~/.git-credentials`) - plaintext tokens
+- Docker (`~/.docker/config.json`) - plaintext registry auth
 
-// catalog.rs:40-42 - Passed directly to REST catalog
-for (key, value) in &config.properties {
-    props.insert(key.clone(), value.clone());
-}
-```
-
-**Impact:**
-- Credentials exposed in plaintext on disk
-- Credentials in memory without protection
-- Risk of accidental commit to version control
-- Credentials visible in process listings or memory dumps
-- No protection against unauthorized file system access
-
-**Recommendation:**
-1. **IMMEDIATE:** Add `icetea.toml` to `.gitignore` to prevent credential commits
-2. Use system keychains/credential managers (e.g., `keyring` crate)
-3. Support environment variables for all sensitive configuration
-4. Implement OAuth flows instead of static tokens where possible
-5. Add `zeroize` trait to credential fields to clear memory after use
-6. Consider encrypted configuration files with user-provided passwords
-7. Add warning messages when credentials are loaded from files
-
-**CVSS Score:** 9.1 (Critical)
+IceTea follows the same security model as these established tools.
 
 ---
 
-## High Severity Vulnerabilities
+## Revised Vulnerability Assessment
 
-### 3. Unlimited Input Buffers (HIGH)
-
-**Location:** `src/app.rs:28, 129`
-
-**Description:**
-The query input buffer has no size limits, allowing attackers to exhaust memory through unlimited character input.
-
-**Vulnerable Code:**
-```rust
-pub query_input: String,  // No size limit
-
-// In handle_key_event:
-KeyCode::Char(c) => {
-    self.query_input.push(c);  // Unbounded growth
-}
-```
-
-**Attack Scenario:**
-1. Attacker enters query mode (`:` key)
-2. Continuously sends character input
-3. Application memory grows without bounds
-4. System runs out of memory, causing DoS
-
-**Impact:** Denial of Service through memory exhaustion
-
-**Recommendation:**
-1. Implement maximum query length (e.g., 10,000 characters)
-2. Display character count and limit to user
-3. Reject input when limit is reached
-4. Consider using a bounded buffer type
-
-**Example Fix:**
-```rust
-const MAX_QUERY_LENGTH: usize = 10_000;
-
-KeyCode::Char(c) => {
-    if self.query_input.len() < MAX_QUERY_LENGTH {
-        self.query_input.push(c);
-    }
-}
-```
-
-**CVSS Score:** 7.5 (High)
-
----
-
-### 4. Path Traversal Vulnerability (HIGH)
-
-**Location:** `src/config.rs:109-111`, `src/cli.rs:11`
-
-**Description:**
-Configuration file paths from CLI arguments and environment variables are used without validation, allowing path traversal attacks.
-
-**Vulnerable Code:**
-```rust
-#[arg(short, long, value_name = "FILE", env = "ICETEA_CONFIG")]
-pub config: Option<PathBuf>,
-
-// No validation before use:
-if let Some(path) = config_path {
-    figment = figment.merge(Toml::file(path));
-}
-```
-
-**Attack Scenario:**
-```bash
-# Read arbitrary files
-icetea --config /etc/passwd
-icetea --config ../../sensitive/file.toml
-export ICETEA_CONFIG="/root/.ssh/id_rsa"
-icetea
-```
-
-**Impact:**
-- Read arbitrary files on the system
-- Information disclosure
-- Potential for further exploitation
-
-**Recommendation:**
-1. Validate config file paths to ensure they are in allowed directories
-2. Reject paths containing `..` or starting with `/` (unless explicitly allowed)
-3. Check file permissions before reading
-4. Implement file size limits to prevent resource exhaustion
-5. Use `std::fs::canonicalize()` to resolve paths and validate them
-
-**Example Fix:**
-```rust
-fn validate_config_path(path: &PathBuf) -> Result<PathBuf> {
-    let canonical = path.canonicalize()
-        .context("Invalid config file path")?;
-
-    // Ensure file is readable and within allowed directories
-    if !canonical.starts_with(home_dir) && !canonical.starts_with(current_dir) {
-        bail!("Config file must be in home or current directory");
-    }
-
-    Ok(canonical)
-}
-```
-
-**CVSS Score:** 7.5 (High)
-
----
-
-## Medium Severity Vulnerabilities
-
-### 5. Missing .gitignore Entry for Secrets (MEDIUM)
+### 1. Missing .gitignore Entry for Configuration (MEDIUM)
 
 **Location:** `.gitignore`
+**Severity:** MEDIUM (unchanged - this is the primary concern)
 
 **Description:**
-The `.gitignore` file does not exclude `icetea.toml` or other configuration files that may contain credentials.
+The `.gitignore` file does not exclude `icetea.toml`, creating risk of accidentally committing credentials to version control.
 
-**Current .gitignore:**
-```
-debug
-target
-**/*.rs.bk
-*.pdb
-**/mutants.out*/
-```
+**Why This Matters for CLI Tools:**
+Even though plaintext config files are standard for CLI tools, they should **never** be committed to git. This is a universal best practice across all CLI tooling.
 
 **Impact:**
-- High risk of accidentally committing credentials to version control
 - Credentials exposed in git history
 - Credentials shared across team/public repositories
+- Difficult to rotate compromised credentials
+
+**Examples from Other Tools:**
+```bash
+# AWS CLI
+.gitignore: .aws/
+
+# Kubernetes
+.gitignore: .kube/config
+
+# Git itself
+.gitignore: .git-credentials
+```
 
 **Recommendation:**
 Add to `.gitignore`:
-```
+```gitignore
 # Configuration files with secrets
 icetea.toml
 *.toml
@@ -247,77 +99,299 @@ icetea.toml
 !.env.example
 ```
 
-**CVSS Score:** 6.5 (Medium)
+**Status:** ✅ Should fix before first release
 
 ---
 
-### 6. Information Disclosure via Error Messages (MEDIUM)
+### 2. Unmaintained Dependencies (LOW)
 
-**Location:** `src/iceberg/catalog.rs:88-100`
+**Detected by:** `cargo audit`
+**Severity:** LOW (downgraded from MEDIUM)
+
+**Findings:**
+
+#### paste v1.0.15 (RUSTSEC-2024-0436)
+- **Status:** Unmaintained (as of 2024-10-07)
+- **Source:** Transitive dependency via `parquet` crate
+- **Actual Risk:** Very low - proc-macro crate with limited attack surface
+
+#### rustls-pemfile v2.2.0 (RUSTSEC-2025-0134)
+- **Status:** Unmaintained (as of 2025-11-28)
+- **Source:** Transitive dependency via `object_store` crate
+- **Actual Risk:** Low - certificate parsing library
+
+**Why Low Severity:**
+- No known CVEs in either dependency
+- Transitive dependencies (not direct)
+- Upstream crates (`parquet`, `object_store`) will likely update
+- CLI tool has limited exposure compared to network services
+
+**Recommendation:**
+- Run `cargo audit` periodically (monthly)
+- Update dependencies with `cargo update` regularly
+- Monitor upstream crates for updates
+
+**Status:** ⚠️ Monitor but not blocking
+
+---
+
+### 3. Query Input Without Validation (LOW)
+
+**Location:** `src/iceberg/query.rs:33-44`
+**Severity:** LOW (downgraded from CRITICAL)
 
 **Description:**
-Error messages may expose internal system information, file paths, and configuration details.
+User input from the query interface is passed directly to DataFusion's SQL engine without validation.
 
-**Example Code:**
+**Original Code:**
 ```rust
-let catalog = self
-    .get_catalog(catalog_name)
-    .context("Catalog not found")?;  // May expose catalog names
-
-let namespaces = catalog
-    .list_namespaces(None)
-    .await
-    .context("Failed to list namespaces")?;  // May expose internal errors
+pub async fn execute_query(&self, sql: &str) -> Result<QueryResults> {
+    let df = self.ctx.sql(sql).await
+        .context("Failed to parse SQL query")?;
 ```
 
-**Impact:**
-- Leakage of internal system structure
-- Helps attackers map the system
-- May expose credentials or sensitive paths in stack traces
+**Why This Is Not a Security Issue for CLI Tools:**
 
-**Recommendation:**
-1. Sanitize error messages before displaying to users
-2. Log detailed errors internally but show generic messages to users
-3. Remove stack traces and file paths from user-facing errors
-4. Implement separate error types for internal vs. external errors
+1. **User Already Has Credentials:** A user with shell access can read `icetea.toml` and use credentials directly:
+   ```bash
+   cat ~/.config/icetea/icetea.toml  # Read credentials
+   curl -H "Authorization: Bearer $TOKEN" https://catalog/api  # Use directly
+   ```
 
-**CVSS Score:** 5.3 (Medium)
+2. **No Privilege Escalation:** The query runs with the same permissions as the user's configured catalogs. Cannot access data the user shouldn't have.
+
+3. **Standard CLI Pattern:** Similar to:
+   - `psql -c "DROP DATABASE prod"` - PostgreSQL CLI
+   - `mysql -e "DELETE FROM users"` - MySQL CLI
+   - `aws dynamodb delete-table --table-name prod` - AWS CLI
+
+   All of these trust the user not to shoot themselves in the foot.
+
+**What This Actually Prevents:**
+- ❌ Not protecting against malicious users (they already have access)
+- ✅ Protecting against accidental mistakes
+- ✅ Providing better error messages
+- ✅ Enforcing organizational policies (e.g., read-only mode)
+
+**Recommendations for Robustness (not security):**
+1. Add optional read-only mode flag: `icetea --read-only`
+2. Add query confirmation for destructive operations (DROP, DELETE, etc.)
+3. Add query timeout to prevent runaway queries
+4. Consider query logging for audit purposes
+
+**Example Improvement:**
+```rust
+pub async fn execute_query(&self, sql: &str, options: &QueryOptions) -> Result<QueryResults> {
+    // Optional: Warn on destructive queries
+    if options.interactive && is_destructive_query(sql) {
+        confirm_query(sql)?;
+    }
+
+    // Optional: Enforce read-only mode
+    if options.read_only && is_write_query(sql) {
+        bail!("Write queries not allowed in read-only mode");
+    }
+
+    let df = self.ctx.sql(sql).await
+        .context("Failed to parse SQL query")?;
+    ...
+}
+```
+
+**Status:** ⚠️ Nice-to-have for usability, not critical
 
 ---
 
-### 7. Missing Request Rate Limiting (MEDIUM)
+### 4. Plaintext Credential Storage (NOT A VULNERABILITY)
 
-**Location:** `src/main.rs:100-127`, `src/iceberg/query.rs`
+**Location:** `src/config.rs`, `icetea.toml.example`
+**Severity:** INFORMATIONAL (downgraded from CRITICAL)
 
 **Description:**
-No rate limiting on query execution or API calls to Iceberg catalogs.
+Authentication tokens and AWS credentials are stored in plaintext in `icetea.toml`.
 
-**Attack Scenario:**
-1. Attacker repeatedly executes expensive queries
-2. No throttling or cooldown period
-3. Backend catalog API overwhelmed
-4. Legitimate users unable to access system
+**Why This Is Standard Practice for CLI Tools:**
 
-**Impact:** Denial of Service against both application and backend catalogs
+CLI tools universally use plaintext credential storage protected by file system permissions:
 
-**Recommendation:**
-1. Implement per-user query rate limits
-2. Add cooldown periods between queries
-3. Track query execution times and throttle expensive queries
-4. Display query count and remaining quota to users
+```bash
+# AWS CLI - plaintext credentials
+$ cat ~/.aws/credentials
+[default]
+aws_access_key_id = AKIAIOSFODNN7EXAMPLE
+aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 
-**CVSS Score:** 5.3 (Medium)
+# Kubernetes - plaintext certificates and tokens
+$ cat ~/.kube/config
+users:
+- name: cluster-admin
+  user:
+    client-certificate-data: LS0tLS1CRUdJTi...
+    token: eyJhbGciOiJSUzI1NiIsImtpZCI6IiJ9...
+
+# PostgreSQL - plaintext passwords
+$ cat ~/.pgpass
+localhost:5432:mydb:postgres:secretpassword
+
+# Docker - plaintext registry auth
+$ cat ~/.docker/config.json
+{
+  "auths": {
+    "https://index.docker.io/v1/": {
+      "auth": "dXNlcm5hbWU6cGFzc3dvcmQ="
+    }
+  }
+}
+```
+
+**Security Model:**
+- Protection via OS file permissions (chmod 600 or 644)
+- User's responsibility to secure their home directory
+- System administrator's responsibility to configure proper user isolation
+- No encryption provides any real security if attacker has shell access
+
+**Best Practices (Already Followed):**
+- ✅ Store credentials in user's config directory
+- ✅ Document where credentials are stored
+- ✅ Provide example configuration file
+- ✅ Support environment variables as alternative
+
+**Optional Enhancements (Not Required):**
+- Support environment variables for all credentials
+- Add warning message on first run about credential storage
+- Document file permission recommendations in README
+
+**Status:** ✅ No changes required - standard CLI practice
 
 ---
 
-### 8. Cursor Position Integer Overflow (MEDIUM)
+### 5. Path Traversal in Config Loading (INFORMATIONAL)
 
-**Location:** `src/ui/query_input.rs:35-42`
+**Location:** `src/config.rs:109-111`, `src/cli.rs:11`
+**Severity:** INFORMATIONAL (downgraded from HIGH)
 
 **Description:**
-Cursor position calculation uses `u16` type which could overflow with very long input strings.
+Configuration file paths from CLI arguments are used without validation.
 
 **Vulnerable Code:**
+```rust
+#[arg(short, long, value_name = "FILE", env = "ICETEA_CONFIG")]
+pub config: Option<PathBuf>,
+
+if let Some(path) = config_path {
+    figment = figment.merge(Toml::file(path));
+}
+```
+
+**Why This Is Not a Security Issue:**
+
+User with shell access can already read any file they have permissions for:
+```bash
+# User can already do this:
+cat /etc/passwd
+cat /path/to/any/file
+
+# So this doesn't grant new capabilities:
+icetea --config /etc/passwd  # Will fail to parse as TOML
+```
+
+**What This Actually Is:**
+- A robustness/user experience issue
+- Can provide confusing error messages
+- User might accidentally specify wrong file
+
+**Recommendations for Better UX:**
+```rust
+fn load_config(path: &PathBuf) -> Result<Config> {
+    // Provide helpful error messages
+    if !path.exists() {
+        bail!("Config file not found: {}", path.display());
+    }
+
+    if !path.is_file() {
+        bail!("Config path is not a file: {}", path.display());
+    }
+
+    // Check file size to prevent accidentally loading huge files
+    let metadata = path.metadata()?;
+    if metadata.len() > 10 * 1024 * 1024 {  // 10MB
+        bail!("Config file too large: {} bytes", metadata.len());
+    }
+
+    // Try to load and provide clear error on parse failure
+    figment.merge(Toml::file(path))
+        .extract()
+        .with_context(|| format!("Failed to parse config file: {}", path.display()))
+}
+```
+
+**Status:** ⚠️ Nice-to-have for better error messages
+
+---
+
+### 6. Unlimited Input Buffers (LOW)
+
+**Location:** `src/app.rs:28, 129`
+**Severity:** LOW (downgraded from HIGH)
+
+**Description:**
+The query input buffer has no size limits.
+
+**Vulnerable Code:**
+```rust
+pub query_input: String,  // No size limit
+
+KeyCode::Char(c) => {
+    self.query_input.push(c);  // Unbounded growth
+}
+```
+
+**Why Low Severity:**
+
+1. **Local DoS Only:** Only affects the user running the tool
+2. **User Can Already DoS:** Many other ways to exhaust memory:
+   ```bash
+   yes | head -n 999999999 > /tmp/bigfile  # Fill disk
+   :(){ :|:& };:  # Fork bomb
+   stress --vm 1 --vm-bytes 10G  # Memory exhaustion
+   ```
+
+3. **Self-Inflicted:** User would have to intentionally hold down a key
+
+**Why Still Worth Fixing:**
+
+This is a **robustness** issue, not security:
+- Prevents accidental paste of huge files
+- Improves user experience
+- Prevents crashes from extremely long queries
+
+**Recommendation:**
+```rust
+const MAX_QUERY_LENGTH: usize = 100_000;  // 100KB should be plenty
+
+KeyCode::Char(c) => {
+    if self.query_input.len() < MAX_QUERY_LENGTH {
+        self.query_input.push(c);
+    } else {
+        // Optional: Show warning in status bar
+        self.status_message = Some("Query too long - limit reached".to_string());
+    }
+}
+```
+
+**Status:** ⚠️ Good practice for robustness
+
+---
+
+### 7. Cursor Position Integer Overflow (LOW)
+
+**Location:** `src/ui/query_input.rs:35-42`
+**Severity:** LOW (unchanged)
+
+**Description:**
+Cursor position calculation could overflow with very long input.
+
+**Code:**
 ```rust
 frame.set_cursor_position((
     area.x + app.query_input.len() as u16 + 1,  // Could overflow
@@ -325,17 +399,12 @@ frame.set_cursor_position((
 ));
 ```
 
-**Impact:**
-- Cursor position wraps around on overflow
-- UI rendering issues
-- Potential panic in debug mode
+**Why Low Severity:**
+- Requires query length > 65,535 characters
+- Only affects UI rendering
+- Fixed by query length limit above
 
 **Recommendation:**
-1. Add bounds checking before casting to u16
-2. Cap cursor position at terminal width
-3. Handle overflow gracefully
-
-**Example Fix:**
 ```rust
 let cursor_x = area.x.saturating_add(
     app.query_input.len().min((u16::MAX - area.x - 1) as usize) as u16
@@ -343,277 +412,313 @@ let cursor_x = area.x.saturating_add(
 frame.set_cursor_position((cursor_x, area.y + 1));
 ```
 
-**CVSS Score:** 4.3 (Medium)
+**Status:** ⚠️ Fix alongside query length limit
 
 ---
 
-## Low Severity Issues
+### 8. Information Disclosure via Error Messages (NOT APPLICABLE)
 
-### 9. Incomplete Implementations (LOW)
-
-**Locations:** Multiple files with TODO markers
+**Location:** `src/iceberg/catalog.rs:88-100`
+**Severity:** INFORMATIONAL (downgraded from MEDIUM)
 
 **Description:**
-12 TODO markers indicate incomplete security-relevant features:
+Error messages include detailed information about catalog names, namespaces, and internal errors.
 
-1. `main.rs:51, 63` - Query execution in CLI mode
-2. `query.rs:58` - Table listing
-3. `query.rs:82, 93, 99` - Output formatting
-4. `table_provider.rs:239` - Actual data reading from Iceberg
-5. `metadata.rs:53, 65` - Schema/metadata extraction
+**Why This Is Fine for CLI Tools:**
 
-**Impact:**
-When these features are implemented, they may introduce new vulnerabilities if security is not considered during development.
+1. **Verbose Errors Are Good:** CLI tools should be verbose to help users debug:
+   ```bash
+   $ aws s3 ls s3://nonexistent-bucket
+   An error occurred (NoSuchBucket) when calling the ListObjectsV2 operation: The specified bucket does not exist
 
-**Recommendation:**
-1. Complete all TODO items before production release
-2. Conduct security review for each new implementation
-3. Add security tests for new features
-4. Document security considerations for each TODO
+   $ kubectl get pod nonexistent
+   Error from server (NotFound): pods "nonexistent" not found
+   ```
 
----
+2. **User Already Has Access:** The user can query this information directly through the catalog API
 
-### 10. No Authentication on TUI Access (LOW)
-
-**Location:** `src/main.rs`
-
-**Description:**
-The TUI application itself has no authentication mechanism. Anyone with terminal access can use all configured catalogs.
-
-**Impact:**
-Limited to local access, but concerns include:
-- Multiple users on shared systems
-- Compromised local accounts
-- Unauthorized use of configured credentials
+3. **Debugging is Important:** Detailed errors are crucial for troubleshooting
 
 **Recommendation:**
-1. Consider adding optional password protection for TUI startup
-2. Support per-catalog authentication prompts
-3. Implement session timeouts for idle connections
-4. Add audit logging of all TUI sessions
+- ✅ Keep detailed error messages
+- ✅ Consider adding `--verbose` flag for even more detail
+- ✅ Include stack traces in verbose mode
+
+**Status:** ✅ Current behavior is correct for CLI tools
 
 ---
 
-## Dependency Vulnerabilities
+## Non-Issues (Removed from Original Report)
 
-### 11. Unmaintained Dependencies (MEDIUM)
+The following items from the original audit are **not applicable** to CLI tools:
 
-**Detected by:** `cargo audit`
+### ❌ Rate Limiting
+- **Why Not Applicable:** User can just run the tool multiple times
+- No benefit for local CLI tools
 
-**Findings:**
+### ❌ Authentication on TUI Access
+- **Why Not Applicable:** OS handles authentication (user login)
+- Adding password would just annoy users
 
-#### paste v1.0.15 (RUSTSEC-2024-0436)
-- **Status:** Unmaintained (as of 2024-10-07)
-- **Source:** Transitive dependency via `parquet` crate
-- **Impact:** No active security patches if vulnerabilities are discovered
-- **Recommendation:** Monitor for updates to `parquet` that use maintained alternatives
+### ❌ Session Timeouts
+- **Why Not Applicable:** CLI tools don't maintain sessions
+- Each execution is independent
 
-#### rustls-pemfile v2.2.0 (RUSTSEC-2025-0134)
-- **Status:** Unmaintained (as of 2025-11-28)
-- **Source:** Transitive dependency via `object_store` crate
-- **Impact:** TLS/SSL certificate parsing may have unpatched vulnerabilities
-- **Recommendation:** Monitor for updates to `object_store` with maintained alternatives
-
-**Overall Dependency Health:**
-- Total dependencies: 589 crates
-- Known vulnerabilities: 0 (no CVEs)
-- Unmaintained warnings: 2
-- **Action Required:** Monitor dependency updates and update regularly
+### ❌ Network Security Enforcement
+- **Why Not Applicable:** User controls their own network config
+- Should support both HTTP and HTTPS based on user needs
 
 ---
 
-## Positive Security Features
+## Actual Security Recommendations for CLI Tools
 
-### Strengths Identified
+### Immediate Actions
 
-1. **Memory Safety:** Written in Rust with no `unsafe` blocks - protected against buffer overflows, use-after-free, and null pointer dereferences
+1. **Add Configuration Files to .gitignore** (MEDIUM Priority)
+   ```gitignore
+   # Add to .gitignore
+   icetea.toml
+   *.toml
+   !icetea.toml.example
+   .env
+   .env.*
+   !.env.example
+   ```
 
-2. **Type Safety:** Strong typing throughout prevents many common programming errors
+2. **Document Credential Storage** (LOW Priority)
+   Add to README.md:
+   ```markdown
+   ## Security
 
-3. **Error Handling:** Consistent use of `Result<T>` and proper error propagation with `anyhow`/`thiserror`
+   IceTea stores credentials in `icetea.toml` in plaintext, similar to
+   AWS CLI, kubectl, and other CLI tools. These are protected by file
+   system permissions.
 
-4. **Structured Logging:** Uses `tracing` framework for audit capabilities
+   **Best Practices:**
+   - Never commit `icetea.toml` to version control
+   - Set restrictive permissions: `chmod 600 ~/.config/icetea/icetea.toml`
+   - Use separate credentials per environment
+   - Rotate credentials regularly
+   - Consider using environment variables in CI/CD environments
+   ```
 
-5. **Dependency Management:** Uses modern, well-maintained core dependencies (tokio, ratatui, datafusion)
+### Short-Term Improvements (Robustness)
 
-6. **Clean Architecture:** Well-organized code structure makes security review easier
+3. **Add Query Length Limits** (LOW Priority)
+   - Prevents accidental paste of huge files
+   - Improves stability
+
+4. **Add Query Timeouts** (LOW Priority)
+   - Already configured in config.rs (300 seconds default)
+   - Ensure it's actually enforced
+
+5. **Add Optional Read-Only Mode** (LOW Priority)
+   ```bash
+   icetea --read-only  # Disallow DDL/DML operations
+   ```
+
+6. **Add Destructive Query Confirmation** (LOW Priority)
+   ```rust
+   // Prompt for confirmation on DROP, DELETE, TRUNCATE
+   if is_destructive(query) {
+       confirm("This will modify data. Continue? (y/N): ")?;
+   }
+   ```
+
+### Long-Term Enhancements (Optional)
+
+7. **Support External Credential Providers**
+   - AWS IAM roles
+   - Kubernetes service accounts
+   - OIDC/OAuth flows
+
+8. **Add Audit Logging**
+   - Optional query logging for compliance
+   - Useful for shared/bastion hosts
+
+9. **Consider OS Keychain Integration**
+   - Optional alternative to plaintext config
+   - Use `keyring` crate
+   - Still allow plaintext for scriptability
 
 ---
 
-## Security Recommendations by Priority
+## CLI Tool Best Practices (Already Followed)
 
-### Immediate Actions (Before Any Production Use)
+IceTea already follows many CLI security best practices:
 
-1. **Fix SQL injection vulnerability**
-   - Add input validation
-   - Implement query allowlists
-   - Add resource limits
+✅ **Uses Configuration Files:** Standard location for user config
+✅ **Supports Environment Variables:** `ICETEA_*` prefix
+✅ **Provides Example Config:** `icetea.toml.example`
+✅ **Graceful Error Handling:** Helpful error messages
+✅ **Memory Safe Implementation:** Written in Rust
+✅ **No Privilege Escalation:** Runs with user permissions
+✅ **Clear Documentation:** Example configs with comments
+✅ **Layered Configuration:** Supports multiple config sources
 
-2. **Fix credential storage**
-   - Move to environment variables or keychains
-   - Add `icetea.toml` to `.gitignore`
-   - Warn users about plaintext storage
+---
 
-3. **Fix path traversal**
-   - Validate all file paths
-   - Restrict to allowed directories
+## Dependency Health
 
-4. **Add input size limits**
-   - Limit query length
-   - Prevent memory exhaustion
+**Total Dependencies:** 589 crates
+**Known CVEs:** 0
+**Unmaintained Warnings:** 2 (transitive, low risk)
 
-### Short-Term Improvements (Before Beta Release)
+**Recommendation:** Run `cargo audit` quarterly or before releases
 
-5. Implement rate limiting for queries
-6. Sanitize error messages
-7. Add query logging and audit trails
-8. Complete all TODO implementations with security review
-9. Add security tests and fuzzing
-10. Implement query timeouts
+---
 
-### Long-Term Enhancements
+## Comparison to Other CLI Tools
 
-11. Add TUI authentication/authorization
-12. Implement role-based access control (RBAC)
-13. Add data classification and access policies
-14. Implement query result caching with TTL
-15. Add network security (mTLS for catalog connections)
-16. Implement data masking for sensitive columns
-17. Add compliance features (audit logging, data retention)
+| Security Feature | IceTea | AWS CLI | kubectl | psql |
+|-----------------|---------|---------|---------|------|
+| Plaintext Credentials | ✅ | ✅ | ✅ | ✅ |
+| Config in Home Dir | ✅ | ✅ | ✅ | ✅ |
+| Environment Variables | ✅ | ✅ | ✅ | ✅ |
+| Input Validation | ⚠️ | ⚠️ | ⚠️ | ⚠️ |
+| Query Limits | ❌ | ❌ | N/A | ⚠️ |
+| Audit Logging | ❌ | ✅ | ✅ | ⚠️ |
+| Read-Only Mode | ❌ | ❌ | ❌ | ✅ |
+
+IceTea's security posture is **comparable to industry-standard CLI tools**.
 
 ---
 
 ## Testing Recommendations
 
-### Security Testing Required
+### Security Testing for CLI Tools
 
 1. **Static Analysis:**
-   - Run `cargo clippy -- -W clippy::all`
-   - Use `cargo deny` for dependency auditing
-   - Run `cargo audit` in CI/CD pipeline
+   ```bash
+   cargo clippy -- -W clippy::all
+   cargo audit  # Quarterly
+   ```
 
-2. **Dynamic Testing:**
-   - SQL injection test suite
-   - Fuzzing with `cargo fuzz`
-   - Memory safety testing with `valgrind` or `miri`
-   - Integration tests with malicious inputs
+2. **Robustness Testing:**
+   - Test with malformed config files
+   - Test with very long queries
+   - Test with invalid credentials
+   - Test network failure scenarios
 
-3. **Penetration Testing:**
-   - Manual security testing
-   - Automated vulnerability scanning
-   - Red team assessment before production
+3. **Integration Testing:**
+   - Test against real Iceberg catalogs
+   - Test multi-catalog configurations
+   - Test all CLI flags and options
 
-4. **Compliance Testing:**
-   - OWASP Top 10 verification
-   - CWE Top 25 verification
-   - Industry-specific compliance (if applicable)
+4. **NOT Required for CLI:**
+   - ❌ Penetration testing
+   - ❌ Web vulnerability scanning
+   - ❌ OWASP Top 10 testing
+   - ❌ Load testing / DoS testing
 
 ---
 
 ## Compliance Considerations
 
-### Applicable Standards
+### Applicable Standards for CLI Tools
 
-1. **OWASP Top 10 (2021):**
-   - ❌ A03:2021 - Injection (SQL Injection vulnerability)
-   - ❌ A05:2021 - Security Misconfiguration (Plaintext credentials)
-   - ❌ A07:2021 - Identification and Authentication Failures
-   - ⚠️  A09:2021 - Security Logging and Monitoring (Partial)
+**OWASP Top 10:** Not applicable (web application framework)
 
-2. **CWE Top 25:**
-   - CWE-89: SQL Injection
-   - CWE-200: Information Disclosure
-   - CWE-22: Path Traversal
-   - CWE-311: Missing Encryption of Sensitive Data
+**CWE Relevant Items:**
+- ✅ CWE-311 (Credential Storage): Acceptable for CLI tools with file permissions
+- ✅ CWE-200 (Information Disclosure): Verbose errors expected in CLI tools
 
-3. **Data Protection:**
-   - **GDPR:** If handling EU data, need audit logs, data access controls, encryption
-   - **CCPA:** If handling California resident data, need access controls and audit trails
-   - **SOC 2:** Need comprehensive logging, access controls, encryption at rest/transit
+**Data Protection Regulations:**
+- **GDPR/CCPA:** If processing personal data:
+  - ✅ Data minimization (only what user configures)
+  - ⚠️ Consider optional audit logging
+  - ✅ User controls their own data
+
+- **SOC 2:** If used in enterprise:
+  - ⚠️ Consider adding audit logging
+  - ✅ Credentials protected by OS
+  - ✅ No unnecessary data collection
 
 ---
 
 ## Conclusion
 
-IceTea is an early-stage project with significant security vulnerabilities that **must be addressed before production use**. The core functionality is well-architected with Rust's memory safety providing a strong foundation, but application-level security controls are insufficient.
+IceTea follows appropriate security practices for a command-line interface tool. The security model is consistent with industry-standard CLI tools like AWS CLI, kubectl, and psql.
 
-**Key Takeaways:**
+**Security Assessment:**
 
-- ✅ Strong foundation with Rust's memory safety
-- ✅ Clean architecture and well-organized code
-- ❌ Critical SQL injection vulnerability
-- ❌ Plaintext credential storage
-- ❌ Missing input validation and sanitization
-- ⚠️  Incomplete implementations need security review
+- ✅ **Memory Safety:** Rust provides strong guarantees
+- ✅ **Credential Storage:** Standard CLI pattern with file permissions
+- ✅ **Error Handling:** Appropriate verbosity for debugging
+- ✅ **Configuration:** Flexible, layered approach
+- ⚠️ **Input Validation:** Should add limits for robustness
+- ⚠️ **Dependency Monitoring:** Should track updates
 
-**Risk Status:** **HIGH - NOT PRODUCTION READY**
+**Risk Status:** **LOW - APPROPRIATE FOR CLI TOOL**
 
-**Estimated Effort to Secure:**
-- Critical fixes: 2-3 days
-- High priority fixes: 3-5 days
-- Medium priority fixes: 5-7 days
-- Comprehensive security testing: 7-10 days
-- **Total:** ~3-4 weeks of security-focused development
+**Production Readiness:**
+- ✅ Ready for development and internal use now
+- ⚠️ Add `.gitignore` entries before team use
+- ⚠️ Add query limits before general release
+- ✅ Security posture appropriate for 0.1.0 release
 
----
-
-## Appendix A: Security Testing Checklist
-
-- [ ] SQL injection testing (all query entry points)
-- [ ] Path traversal testing (config file loading)
-- [ ] Input fuzzing (keyboard event handling)
-- [ ] Memory exhaustion testing (unlimited buffers)
-- [ ] Rate limiting testing (query execution)
-- [ ] Credential exposure testing (config file handling)
-- [ ] Error message sanitization review
-- [ ] Dependency vulnerability scanning
-- [ ] Network security testing (REST catalog connections)
-- [ ] Authentication/authorization testing
-- [ ] Session management testing
-- [ ] Audit log verification
-- [ ] TLS/SSL configuration review
-- [ ] Code review for unsafe patterns
-- [ ] Third-party security assessment
+**Estimated Effort to Address Recommendations:**
+- Critical fixes: **None required**
+- High priority (`.gitignore`): **5 minutes**
+- Robustness improvements: **1-2 days**
+- **Total:** Less than 1 week for all recommendations
 
 ---
 
-## Appendix B: Recommended Dependencies
+## Updated Checklist
 
-```toml
-# Add to Cargo.toml for security enhancements
+### Required Before Team Use
+- [ ] Add `icetea.toml` to `.gitignore`
+- [ ] Document credential storage in README
+- [ ] Add example showing file permissions
 
-[dependencies]
-# Credential management
-keyring = "2.0"
-zeroize = { version = "1.7", features = ["derive"] }
+### Recommended for 1.0 Release
+- [ ] Add query length limits (100KB max)
+- [ ] Add query timeout enforcement
+- [ ] Fix cursor position overflow
+- [ ] Add destructive query confirmation
+- [ ] Add optional read-only mode
+- [ ] Add query logging option
 
-# Input validation
-validator = "0.18"
+### Nice to Have
+- [ ] OS keychain integration
+- [ ] OIDC/OAuth support for catalogs
+- [ ] Audit logging for enterprise use
+- [ ] Shell completion (bash/zsh/fish)
 
-# Rate limiting
-governor = "0.7"
+---
 
-# Security logging
-secrecy = "0.8"
+## Appendix A: CLI Security Resources
 
-[dev-dependencies]
-# Security testing
-proptest = "1.5"
-cargo-fuzz = "0.12"
+- [The Twelve-Factor CLI Apps](https://medium.com/@jdxcode/12-factor-cli-apps-dd3c227a0e46)
+- [CLI Guidelines](https://clig.dev/)
+- [AWS CLI Security Best Practices](https://docs.aws.amazon.com/cli/latest/userguide/cli-security-best-practices.html)
+- [kubectl Security Context](https://kubernetes.io/docs/tasks/configure-pod-container/security-context/)
+- [Rust CLI Book - Configuration](https://rust-cli.github.io/book/tutorial/config.html)
+
+---
+
+## Appendix B: File Permission Recommendations
+
+Recommended permissions for IceTea configuration:
+
+```bash
+# Configuration directory
+mkdir -p ~/.config/icetea
+chmod 700 ~/.config/icetea
+
+# Configuration file
+chmod 600 ~/.config/icetea/icetea.toml
+
+# Verify permissions
+ls -la ~/.config/icetea
+# Should show: drwx------ for directory
+# Should show: -rw------- for icetea.toml
 ```
 
 ---
 
-## Appendix C: References
-
-- [OWASP Top 10 (2021)](https://owasp.org/Top10/)
-- [CWE Top 25](https://cwe.mitre.org/top25/)
-- [RustSec Advisory Database](https://rustsec.org/)
-- [Rust Security Guidelines](https://anssi-fr.github.io/rust-guide/)
-- [DataFusion Security Documentation](https://datafusion.apache.org/)
-
----
-
 **Report Generated:** 2025-12-31
-**Next Review Date:** After implementing critical fixes
+**Revised:** 2025-12-31 (Updated for CLI threat model)
+**Next Review Date:** Before 1.0 release or after significant feature additions
 
