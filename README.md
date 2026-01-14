@@ -9,8 +9,9 @@ A Terminal User Interface (TUI) for interacting directly with Apache Iceberg cat
 - ✅ TUI scaffolding with ratatui
 - ✅ CLI interface with clap
 - ✅ Configuration management with figment
-- ⏳ Connect to multiple catalogs simultaneously
-- ⏳ Read all table metadata
+- ✅ Connect to multiple catalogs simultaneously
+- ✅ Browse catalogs, namespaces, and tables in tree view
+- ✅ View table metadata (schema, partitioning, sort order, properties)
 - ⏳ View snapshot history as chain/log/tree
 - ⏳ Generate list of files in tables/partitions
 - ⏳ View list of partitions
@@ -119,11 +120,22 @@ icetea
 ```
 
 **Keyboard Shortcuts:**
+- `↑`/`↓` or `j`/`k` - Navigate tree
+- `←`/`→` or `h`/`l` - Collapse/expand nodes
+- `Enter` - Toggle expand/collapse
 - `q` - Quit application
 - `:` - Enter query mode
 - `?` - Show help
 - `ESC` - Return to browser
 - `Ctrl+C` - Force quit
+
+**Table Detail View:**
+When you select a table in the tree, the detail panel displays:
+- **Schema** - All fields with ID, name, type, and required status
+- **Partition Spec** - Partition columns with their transforms
+- **Sort Order** - Sort columns with direction and null ordering
+- **Properties** - Table configuration properties
+- **Snapshot Info** - Current snapshot ID and total count
 
 ### CLI Mode
 
@@ -173,6 +185,8 @@ This is a greenfield project in active development. The current implementation p
 - ✅ Upgraded to iceberg-rust 0.7 + datafusion 45
 - ✅ REST catalog connection via RestCatalogBuilder
 - ✅ Custom DataFusion TableProvider for Iceberg tables
+- ✅ Tree-based catalog/namespace/table browsing
+- ✅ Table metadata display (schema, partitioning, sort order, properties)
 
 **Note**: Now using iceberg-rust v0.7 with proper REST catalog integration. The `RestCatalogBuilder` pattern is used to create catalog connections with full configuration support.
 
