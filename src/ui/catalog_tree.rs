@@ -1,57 +1,94 @@
 //! Catalog tree view for browsing catalogs, namespaces, and tables
 
-use crate::app::App;
+use crate::app::{App, TreeItemType};
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem},
+    widgets::{Block, Borders, List, ListItem, ListState},
     Frame,
 };
 
 pub fn render_catalog_tree(frame: &mut Frame, area: Rect, app: &App) {
     let mut items = Vec::new();
 
-    // Render catalog list
-    if app.catalogs.is_empty() {
+    if app.tree_items.is_empty() {
         items.push(ListItem::new(Line::from(Span::styled(
             "No catalogs configured",
             Style::default().fg(Color::DarkGray),
         ))));
     } else {
-        for (name, state) in &app.catalogs {
-            let status_icon = if state.connected { "●" } else { "○" };
-            let status_color = if state.connected { Color::Green } else { Color::Red };
+        for (idx, tree_item) in app.tree_items.iter().enumerate() {
+            let is_selected = idx == app.selected_index;
 
-            let selected = app.selected_catalog.as_ref().map(|s| s == name).unwrap_or(false);
-            let style = if selected {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            // Build indentation
+            let indent = "  ".repeat(tree_item.depth);
+
+            // Build prefix based on item type and expansion state
+            let (icon, icon_color) = match &tree_item.item_type {
+                TreeItemType::Catalog { connected } => {
+                    if *connected {
+                        if app.expanded.contains(&tree_item.key) {
+                            ("▼ ", Color::Green)
+                        } else {
+                            ("▶ ", Color::Green)
+                        }
+                    } else {
+                        ("○ ", Color::Red)
+                    }
+                }
+                TreeItemType::Namespace => {
+                    if app.expanded.contains(&tree_item.key) {
+                        ("▼ ", Color::Blue)
+                    } else {
+                        ("▶ ", Color::Blue)
+                    }
+                }
+                TreeItemType::Table => ("  ", Color::White),
+            };
+
+            // Build the type indicator
+            let type_indicator = match &tree_item.item_type {
+                TreeItemType::Catalog { .. } => "󰆼 ", // catalog/database icon
+                TreeItemType::Namespace => "󰉋 ",     // folder icon
+                TreeItemType::Table => "󰓫 ",         // table icon
+            };
+
+            let type_color = match &tree_item.item_type {
+                TreeItemType::Catalog { connected } => {
+                    if *connected { Color::Cyan } else { Color::DarkGray }
+                }
+                TreeItemType::Namespace => Color::Yellow,
+                TreeItemType::Table => Color::Magenta,
+            };
+
+            // Build the name style
+            let name_style = if is_selected {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
 
-            items.push(ListItem::new(Line::from(vec![
-                Span::styled(status_icon, Style::default().fg(status_color)),
-                Span::raw(" "),
-                Span::styled(name, style),
-            ])));
+            let line = Line::from(vec![
+                Span::raw(indent),
+                Span::styled(icon, Style::default().fg(icon_color)),
+                Span::styled(type_indicator, Style::default().fg(type_color)),
+                Span::styled(&tree_item.name, name_style),
+            ]);
 
-            // Show error if any
-            if let Some(error) = &state.error {
-                items.push(ListItem::new(Line::from(Span::styled(
-                    format!("  ↳ Error: {}", error),
-                    Style::default().fg(Color::Red),
-                ))));
-            }
-
-            // TODO: Show namespaces and tables in tree structure
+            items.push(ListItem::new(line));
         }
     }
 
     let list = List::new(items)
         .block(Block::default()
             .title("Catalogs")
-            .borders(Borders::ALL));
+            .borders(Borders::ALL))
+        .highlight_style(Style::default().bg(Color::DarkGray));
 
+    // We're manually handling selection highlighting in the items themselves
     frame.render_widget(list, area);
 }

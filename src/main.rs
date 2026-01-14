@@ -105,6 +105,9 @@ where
     B: ratatui::backend::Backend,
     B::Error: Send + Sync + 'static,
 {
+    // Track previous selection to detect changes
+    let mut prev_selected_key: Option<String> = None;
+
     loop {
         terminal.draw(|f| ui::render(f, app))?;
 
@@ -117,8 +120,20 @@ where
                     app.should_quit = true;
                 }
 
-                app.handle_key_event(key);
+                // handle_key_event returns true if tree needs rebuilding
+                let needs_rebuild = app.handle_key_event(key);
+                if needs_rebuild {
+                    app.rebuild_tree().await;
+                }
             }
+        }
+
+        // Check if selection changed and load table metadata if needed
+        let current_key = app.selected_item().map(|item| item.key.clone());
+        if current_key != prev_selected_key {
+            prev_selected_key = current_key;
+            // Load table metadata for the newly selected item
+            app.load_selected_table_metadata().await;
         }
 
         if app.should_quit {

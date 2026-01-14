@@ -97,18 +97,26 @@ fn default_max_rows() -> usize {
 
 impl Config {
     /// Load configuration from multiple sources with priority:
-    /// defaults < config file < environment variables < CLI arguments
+    /// defaults < default config locations < explicit config file < environment variables < CLI arguments
     pub fn load(config_path: Option<PathBuf>, cli_catalogs: Vec<String>) -> Result<Self> {
         let mut figment = Figment::new()
             // Start with defaults
-            .merge(Serialized::defaults(Config::default_config()))
-            // Add environment variables (prefixed with ICETEA_)
-            .merge(Env::prefixed("ICETEA_").split("_"));
+            .merge(Serialized::defaults(Config::default_config()));
 
-        // Add config file if provided
+        // Load from default config locations (lower priority first)
+        for path in Self::default_config_paths() {
+            if path.exists() {
+                figment = figment.merge(Toml::file(&path));
+            }
+        }
+
+        // Add explicit config file if provided (higher priority than defaults)
         if let Some(path) = config_path {
             figment = figment.merge(Toml::file(path));
         }
+
+        // Add environment variables (prefixed with ICETEA_)
+        figment = figment.merge(Env::prefixed("ICETEA_").split("_"));
 
         // Merge CLI catalogs if provided
         if !cli_catalogs.is_empty() {
@@ -119,6 +127,24 @@ impl Config {
         figment
             .extract()
             .context("Failed to load configuration")
+    }
+
+    /// Returns default config file paths in order of priority (lowest first)
+    fn default_config_paths() -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+
+        // XDG_CONFIG_HOME/icetea/config.toml or ~/.config/icetea/config.toml
+        if let Some(config_dir) = std::env::var_os("XDG_CONFIG_HOME") {
+            paths.push(PathBuf::from(config_dir).join("icetea/config.toml"));
+        } else if let Some(home) = std::env::var_os("HOME") {
+            paths.push(PathBuf::from(home).join(".config/icetea/config.toml"));
+        }
+
+        // Current directory: icetea.toml or config.toml
+        paths.push(PathBuf::from("icetea.toml"));
+        paths.push(PathBuf::from("config.toml"));
+
+        paths
     }
 
     fn default_config() -> Self {

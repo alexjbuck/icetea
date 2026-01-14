@@ -1,6 +1,6 @@
 //! Table metadata operations and snapshot handling
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use iceberg::table::Table;
 use std::collections::HashMap;
@@ -10,8 +10,8 @@ use std::collections::HashMap;
 pub struct TableMetadata {
     pub location: String,
     pub schema: SchemaInfo,
-    pub partition_spec: Vec<String>,
-    pub sort_order: Vec<String>,
+    pub partition_spec: Vec<PartitionFieldInfo>,
+    pub sort_order: Vec<SortFieldInfo>,
     pub properties: HashMap<String, String>,
     pub current_snapshot_id: Option<i64>,
     pub snapshots: Vec<SnapshotInfo>,
@@ -20,6 +20,7 @@ pub struct TableMetadata {
 /// Schema information
 #[derive(Debug, Clone)]
 pub struct SchemaInfo {
+    pub schema_id: i32,
     pub fields: Vec<FieldInfo>,
 }
 
@@ -30,6 +31,24 @@ pub struct FieldInfo {
     pub name: String,
     pub field_type: String,
     pub required: bool,
+}
+
+/// Partition field information
+#[derive(Debug, Clone)]
+pub struct PartitionFieldInfo {
+    pub source_id: i32,
+    pub field_id: i32,
+    pub name: String,
+    pub transform: String,
+}
+
+/// Sort field information
+#[derive(Debug, Clone)]
+pub struct SortFieldInfo {
+    pub source_id: i32,
+    pub transform: String,
+    pub direction: String,
+    pub null_order: String,
 }
 
 /// Snapshot information
@@ -47,22 +66,48 @@ impl TableMetadata {
     pub fn from_table(table: &Table) -> Result<Self> {
         let metadata = table.metadata();
 
-        // Extract schema
-        let _schema = metadata.current_schema();
+        // Extract schema fields
+        let iceberg_schema = metadata.current_schema();
         let schema_info = SchemaInfo {
-            fields: Vec::new(), // TODO: Fix schema field extraction once API is clear
+            schema_id: iceberg_schema.schema_id(),
+            fields: iceberg_schema
+                .as_struct()
+                .fields()
+                .iter()
+                .map(|field| FieldInfo {
+                    id: field.id,
+                    name: field.name.clone(),
+                    field_type: format!("{}", field.field_type),
+                    required: field.required,
+                })
+                .collect(),
         };
 
-        // Extract partition spec
-        let partition_spec = metadata
+        // Extract partition spec fields
+        let partition_spec: Vec<PartitionFieldInfo> = metadata
             .default_partition_spec()
             .fields()
             .iter()
-            .map(|field| format!("{:?}", field))
+            .map(|field| PartitionFieldInfo {
+                source_id: field.source_id,
+                field_id: field.field_id,
+                name: field.name.clone(),
+                transform: format!("{}", field.transform),
+            })
             .collect();
 
-        // Extract sort order
-        let sort_order = Vec::new(); // TODO: Fix sort order extraction once API is clear
+        // Extract sort order fields
+        let sort_order: Vec<SortFieldInfo> = metadata
+            .default_sort_order()
+            .fields
+            .iter()
+            .map(|field| SortFieldInfo {
+                source_id: field.source_id,
+                transform: format!("{}", field.transform),
+                direction: format!("{:?}", field.direction),
+                null_order: format!("{:?}", field.null_order),
+            })
+            .collect();
 
         // Extract properties
         let properties = metadata.properties().clone();

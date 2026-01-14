@@ -109,12 +109,18 @@ fn render_help(frame: &mut Frame, area: Rect) {
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let connected_count = app.catalog_manager.list_catalogs().len();
+
     let status_text = match app.view_state {
         ViewState::Browser => {
-            format!("Browser | Connected catalogs: {} | Press '?' for help, 'q' to quit", app.catalogs.len())
+            if let Some(msg) = &app.status_message {
+                format!("{} | ↑↓/jk:nav  ←→/hl:expand  Enter:toggle  ?:help  q:quit", msg)
+            } else {
+                format!("Connected: {} | ↑↓/jk:nav  ←→/hl:expand  Enter:toggle  ?:help  q:quit", connected_count)
+            }
         }
         ViewState::Query => {
-            "Query Mode | ESC to cancel, Enter to execute".to_string()
+            format!("> {}", app.query_input)
         }
         _ => {
             "Press ESC to return to browser".to_string()
