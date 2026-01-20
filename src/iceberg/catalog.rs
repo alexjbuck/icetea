@@ -13,6 +13,7 @@ use std::sync::Arc;
 pub struct CatalogManager {
     catalogs: HashMap<String, Arc<dyn Catalog>>,
     df_catalogs: HashMap<String, Arc<dyn CatalogProvider>>,
+    catalog_configs: HashMap<String, HashMap<String, String>>,
 }
 
 impl CatalogManager {
@@ -21,7 +22,20 @@ impl CatalogManager {
         Self {
             catalogs: HashMap::new(),
             df_catalogs: HashMap::new(),
+            catalog_configs: HashMap::new(),
         }
+    }
+
+    /// Get catalog server configuration
+    pub fn get_catalog_config(&self, name: &str) -> Option<&HashMap<String, String>> {
+        self.catalog_configs.get(name)
+    }
+
+    /// Remove a catalog (used when connection fails)
+    pub fn remove_catalog(&mut self, name: &str) {
+        self.catalogs.remove(name);
+        self.df_catalogs.remove(name);
+        self.catalog_configs.remove(name);
     }
 
     /// Connect to a catalog using the provided configuration
@@ -53,9 +67,33 @@ impl CatalogManager {
                 // Create DataFusion catalog provider wrapping the Iceberg catalog
                 let df_catalog_provider = Arc::new(IcebergCatalogProvider::new(iceberg_catalog.clone()));
 
-                // Store both catalogs
+                // Fetch catalog configuration from the /v1/config endpoint
+                // This includes defaults like S3 endpoint that the server provides
+                let mut config_url = format!("{}/v1/config", config.uri);
+
+                // Add warehouse parameter if specified
+                if let Some(warehouse) = &config.warehouse {
+                    config_url = format!("{}?warehouse={}", config_url, urlencoding::encode(warehouse));
+                }
+
+                let server_config = match fetch_catalog_config(&config_url, &config.properties).await {
+                    Ok(cfg) => {
+                        tracing::info!("Fetched catalog config for {}: {} properties", name, cfg.len());
+                        for (k, v) in &cfg {
+                            tracing::debug!("  Server config property: {} = {}", k, v);
+                        }
+                        cfg
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to fetch catalog config for {}: {}", name, e);
+                        HashMap::new()
+                    }
+                };
+
+                // Store all information
                 self.catalogs.insert(name.clone(), iceberg_catalog);
                 self.df_catalogs.insert(name.clone(), df_catalog_provider);
+                self.catalog_configs.insert(name.clone(), server_config);
 
                 Ok(())
             }
@@ -145,10 +183,173 @@ impl CatalogManager {
             .await
             .context("Failed to load table")
     }
+
+    /// Fetch storage config for a table by making a direct REST API call
+    /// This gets the storage configuration (like S3 endpoint) that the catalog server provides
+    pub async fn fetch_table_storage_config(
+        &self,
+        catalog_name: &str,
+        catalog_config: &CatalogConfig,
+        namespace: &str,
+        table_name: &str,
+    ) -> Result<HashMap<String, String>> {
+        // Build the load table URL
+        let namespace_encoded = urlencoding::encode(namespace);
+        let table_encoded = urlencoding::encode(table_name);
+        let url = format!(
+            "{}/v1/namespaces/{}/tables/{}",
+            catalog_config.uri, namespace_encoded, table_encoded
+        );
+
+        tracing::debug!("Fetching table storage config from: {}", url);
+
+        let client = reqwest::Client::new();
+        let mut request = client.get(&url);
+
+        // Add OAuth2 token if credentials are provided
+        if let Some(credential) = catalog_config.properties.get("credential") {
+            if let Some(token_url) = catalog_config.properties.get("oauth2-server-uri") {
+                match get_oauth2_token(token_url, credential, catalog_config.properties.get("scope")).await {
+                    Ok(token) => {
+                        request = request.bearer_auth(token);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to get OAuth2 token: {}", e);
+                    }
+                }
+            }
+        }
+
+        let response = request.send().await.context("Failed to fetch table")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to fetch table: {} - {}", status, body);
+        }
+
+        // Parse the LoadTableResult JSON
+        #[derive(serde::Deserialize)]
+        struct LoadTableResult {
+            #[serde(default)]
+            config: HashMap<String, String>,
+        }
+
+        let result: LoadTableResult = response.json().await.context("Failed to parse table response")?;
+
+        tracing::debug!("Got {} storage config properties from table", result.config.len());
+        for (k, v) in &result.config {
+            tracing::debug!("  Table storage config: {} = {}", k, v);
+        }
+
+        Ok(result.config)
+    }
 }
 
 impl Default for CatalogManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Fetch catalog configuration from the REST catalog's /v1/config endpoint
+async fn fetch_catalog_config(
+    config_url: &str,
+    auth_properties: &HashMap<String, String>,
+) -> Result<HashMap<String, String>> {
+    tracing::debug!("Fetching catalog config from: {}", config_url);
+
+    let client = reqwest::Client::new();
+    let mut request = client.get(config_url);
+
+    // Add OAuth2 token if credentials are provided
+    if let Some(credential) = auth_properties.get("credential") {
+        if let Some(token_url) = auth_properties.get("oauth2-server-uri") {
+            tracing::debug!("Obtaining OAuth2 token from: {}", token_url);
+            // Get OAuth2 token
+            match get_oauth2_token(token_url, credential, auth_properties.get("scope")).await {
+                Ok(token) => {
+                    tracing::debug!("Got OAuth2 token, adding to request");
+                    request = request.bearer_auth(token);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to get OAuth2 token: {}", e);
+                }
+            }
+        }
+    }
+
+    let response = request.send().await.context("Failed to fetch catalog config")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Failed to fetch catalog config: {} - {}", status, body);
+    }
+
+    tracing::debug!("Got successful response from catalog config endpoint");
+
+    // Parse the response JSON
+    #[derive(serde::Deserialize)]
+    struct ConfigResponse {
+        #[serde(default)]
+        defaults: HashMap<String, String>,
+        #[serde(default)]
+        overrides: HashMap<String, String>,
+    }
+
+    let config_response: ConfigResponse = response.json().await.context("Failed to parse config response")?;
+
+    // Merge defaults and overrides
+    let mut config = config_response.defaults;
+    config.extend(config_response.overrides);
+
+    Ok(config)
+}
+
+/// Get OAuth2 access token
+async fn get_oauth2_token(token_url: &str, credential: &str, scope: Option<&String>) -> Result<String> {
+    // Parse credential as client_id:client_secret
+    let parts: Vec<&str> = credential.split(':').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("Invalid credential format, expected client_id:client_secret");
+    }
+
+    let client_id = parts[0];
+    let client_secret = parts[1];
+
+    // Build form data
+    let mut form_data = format!(
+        "grant_type=client_credentials&client_id={}&client_secret={}",
+        urlencoding::encode(client_id),
+        urlencoding::encode(client_secret)
+    );
+
+    if let Some(scope_value) = scope {
+        form_data.push_str(&format!("&scope={}", urlencoding::encode(scope_value)));
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(token_url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(form_data)
+        .send()
+        .await
+        .context("Failed to request OAuth2 token")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("OAuth2 token request failed: {} - {}", status, body);
+    }
+
+    #[derive(serde::Deserialize)]
+    struct TokenResponse {
+        access_token: String,
+    }
+
+    let token_response: TokenResponse = response.json().await.context("Failed to parse token response")?;
+
+    Ok(token_response.access_token)
 }

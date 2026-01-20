@@ -119,11 +119,23 @@ impl App {
         self.status_message = Some("Connecting to catalogs...".to_string());
         self.loading = true;
 
-        // Connect to all configured catalogs
+        // Connect to all configured catalogs and verify connection
         for (name, catalog_config) in self.config.catalogs.clone() {
             match self.catalog_manager.connect(name.clone(), &catalog_config).await {
                 Ok(_) => {
-                    self.status_message = Some(format!("Connected to {}", name));
+                    // Verify the connection actually works by listing namespaces
+                    if let Some(catalog) = self.catalog_manager.get_catalog(&name) {
+                        match catalog.list_namespaces(None).await {
+                            Ok(_) => {
+                                self.status_message = Some(format!("Connected to {}", name));
+                            }
+                            Err(e) => {
+                                // Connection failed, remove the catalog
+                                self.catalog_manager.remove_catalog(&name);
+                                self.status_message = Some(format!("Failed to connect to {}: {}", name, e));
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     self.status_message = Some(format!("Failed to connect to {}: {}", name, e));
@@ -302,7 +314,17 @@ impl App {
         match self.catalog_manager.load_table(catalog_name, namespace, table_name).await {
             Ok(table) => {
                 match TableMetadata::from_table(&table) {
-                    Ok(metadata) => {
+                    Ok(mut metadata) => {
+                        // Fetch storage config from the REST API
+                        if let Some(catalog_config) = self.config.catalogs.get(catalog_name) {
+                            if let Ok(storage_config) = self.catalog_manager
+                                .fetch_table_storage_config(catalog_name, catalog_config, namespace, table_name)
+                                .await
+                            {
+                                metadata.storage_properties = storage_config;
+                            }
+                        }
+
                         self.selected_table_metadata = Some(metadata);
                         self.cached_table_key = Some(item.key.clone());
                         self.status_message = Some(format!("Loaded metadata for {}", item.name));

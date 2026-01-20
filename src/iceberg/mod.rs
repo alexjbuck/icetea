@@ -7,6 +7,4 @@ pub mod query;
 pub mod table_provider;
 
 pub use catalog::CatalogManager;
-pub use catalog_provider::IcebergCatalogProvider;
-pub use metadata::{FieldInfo, PartitionFieldInfo, SchemaInfo, SnapshotInfo, SortFieldInfo, TableMetadata};
-pub use table_provider::IcebergTableProvider;
+pub use metadata::{TableMetadata, FieldInfo};

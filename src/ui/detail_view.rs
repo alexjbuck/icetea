@@ -14,20 +14,7 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, app: &App) {
         use crate::app::TreeItemType;
         match &item.item_type {
             TreeItemType::Catalog { connected } => {
-                vec![
-                    Line::from(""),
-                    Line::from(Span::styled(
-                        format!("Catalog: {}", item.name),
-                        Style::default().fg(Color::Cyan),
-                    )),
-                    Line::from(""),
-                    Line::from(format!(
-                        "Status: {}",
-                        if *connected { "Connected" } else { "Disconnected" }
-                    )),
-                    Line::from(""),
-                    Line::from("Expand to view namespaces."),
-                ]
+                render_catalog_details(&item.name, *connected, app)
             }
             TreeItemType::Namespace => {
                 vec![
@@ -62,6 +49,105 @@ pub fn render_detail_panel(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(paragraph, area);
 }
 
+/// Render catalog configuration details
+fn render_catalog_details(name: &str, connected: bool, app: &App) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Catalog: {}", name),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+
+    // Connection status
+    let status_color = if connected { Color::Green } else { Color::Red };
+    lines.push(Line::from(vec![
+        Span::styled("Status: ", Style::default().fg(Color::Yellow)),
+        Span::styled(
+            if connected { "Connected ✓" } else { "Disconnected ✗" },
+            Style::default().fg(status_color),
+        ),
+    ]));
+
+    // Get catalog configuration
+    if let Some(catalog_config) = app.config.catalogs.get(name) {
+        lines.push(Line::from(""));
+
+        // Catalog type
+        lines.push(Line::from(vec![
+            Span::styled("Type: ", Style::default().fg(Color::Yellow)),
+            Span::raw(catalog_config.catalog_type.clone()),
+        ]));
+
+        // URI
+        lines.push(Line::from(vec![
+            Span::styled("URI: ", Style::default().fg(Color::Yellow)),
+            Span::raw(catalog_config.uri.clone()),
+        ]));
+
+        // Warehouse
+        if let Some(warehouse) = &catalog_config.warehouse {
+            lines.push(Line::from(vec![
+                Span::styled("Warehouse: ", Style::default().fg(Color::Yellow)),
+                Span::raw(warehouse.clone()),
+            ]));
+        }
+
+        // Show server-provided configuration (from /v1/config endpoint)
+        if let Some(server_config) = app.catalog_manager.get_catalog_config(name) {
+            if !server_config.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "━━━ Server Configuration ━━━",
+                    Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                )));
+
+                let mut props: Vec<_> = server_config.iter().collect();
+                props.sort_by(|a, b| a.0.cmp(b.0));
+
+                for (key, value) in props {
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {}: ", key), Style::default().fg(Color::Yellow)),
+                        Span::styled(truncate_string(value, 60), Style::default().fg(Color::White)),
+                    ]));
+                }
+            }
+        }
+
+        // Show client properties if any
+        if !catalog_config.properties.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "━━━ Client Properties ━━━",
+                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            )));
+
+            let mut props: Vec<_> = catalog_config.properties.iter().collect();
+            props.sort_by(|a, b| a.0.cmp(b.0));
+
+            for (key, value) in props {
+                // Hide credential values for security
+                let display_value = if key.contains("credential") || key.contains("secret") || key.contains("password") {
+                    "***hidden***".to_string()
+                } else {
+                    truncate_string(value, 60)
+                };
+
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {}: ", key), Style::default().fg(Color::Yellow)),
+                    Span::styled(display_value, Style::default().fg(Color::White)),
+                ]));
+            }
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("Expand to view namespaces."));
+
+    lines
+}
+
 /// Render table metadata content including schema, partitioning, and sorting
 fn render_table_metadata_content(name: &str, key: &str, app: &App) -> Vec<Line<'static>> {
     let mut lines = vec![
@@ -73,6 +159,9 @@ fn render_table_metadata_content(name: &str, key: &str, app: &App) -> Vec<Line<'
         Line::from(""),
     ];
 
+    // Get catalog name from key (format: catalog/namespace/table)
+    let catalog_name = key.split('/').next().unwrap_or("");
+
     // Check if we have metadata loaded
     if let Some(metadata) = &app.selected_table_metadata {
         // Location
@@ -80,6 +169,28 @@ fn render_table_metadata_content(name: &str, key: &str, app: &App) -> Vec<Line<'
             Span::styled("Location: ", Style::default().fg(Color::Yellow)),
             Span::raw(metadata.location.clone()),
         ]));
+
+        // Show S3 endpoint from table storage config (fetched from table load response)
+        if !metadata.storage_properties.is_empty() {
+            if let Some(endpoint) = metadata.storage_properties.get("s3.endpoint")
+                .or_else(|| metadata.storage_properties.get("s3-endpoint"))
+            {
+                lines.push(Line::from(vec![
+                    Span::styled("S3 Endpoint: ", Style::default().fg(Color::Yellow)),
+                    Span::raw(endpoint.clone()),
+                ]));
+            }
+
+            if let Some(region) = metadata.storage_properties.get("s3.region")
+                .or_else(|| metadata.storage_properties.get("s3.region-name"))
+            {
+                lines.push(Line::from(vec![
+                    Span::styled("S3 Region: ", Style::default().fg(Color::Yellow)),
+                    Span::raw(region.clone()),
+                ]));
+            }
+        }
+
         lines.push(Line::from(""));
 
         // Schema section
@@ -105,15 +216,7 @@ fn render_table_metadata_content(name: &str, key: &str, app: &App) -> Vec<Line<'
             ]));
 
             for field in &metadata.schema.fields {
-                let req_marker = if field.required { "✓" } else { "○" };
-                let req_color = if field.required { Color::Green } else { Color::DarkGray };
-                
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{:>4}  ", field.id), Style::default().fg(Color::DarkGray)),
-                    Span::styled(format!("{:<24}", truncate_string(&field.name, 22)), Style::default().fg(Color::White)),
-                    Span::styled(format!("{:<24}", truncate_string(&field.field_type, 22)), Style::default().fg(Color::Cyan)),
-                    Span::styled(req_marker.to_string(), Style::default().fg(req_color)),
-                ]));
+                render_field(&mut lines, field, 0);
             }
         }
         lines.push(Line::from(""));
@@ -170,29 +273,24 @@ fn render_table_metadata_content(name: &str, key: &str, app: &App) -> Vec<Line<'
         }
         lines.push(Line::from(""));
 
-        // Properties section (show a few key ones)
+        // Properties section (show ALL properties for debugging)
         if !metadata.properties.is_empty() {
             lines.push(Line::from(Span::styled(
                 "━━━ Properties ━━━",
                 Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
             )));
-            
+
             let mut props: Vec<_> = metadata.properties.iter().collect();
             props.sort_by(|a, b| a.0.cmp(b.0));
-            
-            for (key, value) in props.iter().take(10) {
+
+            // Show ALL properties (not just 10) to debug what's available
+            for (key, value) in props.iter() {
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {}: ", key), Style::default().fg(Color::Yellow)),
-                    Span::styled(truncate_string(value, 40), Style::default().fg(Color::White)),
+                    Span::styled(truncate_string(value, 60), Style::default().fg(Color::White)),
                 ]));
             }
-            
-            if props.len() > 10 {
-                lines.push(Line::from(Span::styled(
-                    format!("  ... and {} more", props.len() - 10),
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
+
             lines.push(Line::from(""));
         }
 
@@ -226,6 +324,29 @@ fn render_table_metadata_content(name: &str, key: &str, app: &App) -> Vec<Line<'
     }
 
     lines
+}
+
+/// Render a field and its nested fields recursively
+fn render_field(lines: &mut Vec<Line<'static>>, field: &crate::iceberg::metadata::FieldInfo, indent_level: usize) {
+    use crate::iceberg::metadata::FieldInfo;
+
+    let req_marker = if field.required { "✓" } else { "○" };
+    let req_color = if field.required { Color::Green } else { Color::DarkGray };
+
+    // Create indentation
+    let indent = "  ".repeat(indent_level);
+
+    lines.push(Line::from(vec![
+        Span::styled(format!("{:>4}  ", field.id), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{}{:<24}", indent, truncate_string(&field.name, 22 - indent_level * 2)), Style::default().fg(Color::White)),
+        Span::styled(format!("{:<24}", truncate_string(&field.field_type, 22)), Style::default().fg(Color::Cyan)),
+        Span::styled(req_marker.to_string(), Style::default().fg(req_color)),
+    ]));
+
+    // Render nested fields with increased indentation
+    for nested_field in &field.nested_fields {
+        render_field(lines, nested_field, indent_level + 1);
+    }
 }
 
 /// Truncate a string to a maximum length, adding ellipsis if needed

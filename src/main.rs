@@ -9,7 +9,7 @@ use app::App;
 use cli::Cli;
 use config::Config;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -19,12 +19,19 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
+    // Initialize logging to file
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("icetea.log")?;
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| EnvFilter::new("info")),
         )
+        .with_writer(std::sync::Mutex::new(log_file))
+        .with_ansi(false)
         .init();
 
     // Parse CLI arguments
@@ -70,7 +77,7 @@ async fn run_tui(config: Config) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -83,11 +90,7 @@ async fn run_tui(config: Config) -> Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     if let Err(err) = res {

@@ -15,6 +15,7 @@ pub struct TableMetadata {
     pub properties: HashMap<String, String>,
     pub current_snapshot_id: Option<i64>,
     pub snapshots: Vec<SnapshotInfo>,
+    pub storage_properties: HashMap<String, String>,
 }
 
 /// Schema information
@@ -31,6 +32,7 @@ pub struct FieldInfo {
     pub name: String,
     pub field_type: String,
     pub required: bool,
+    pub nested_fields: Vec<FieldInfo>,
 }
 
 /// Partition field information
@@ -61,12 +63,106 @@ pub struct SnapshotInfo {
     pub summary: HashMap<String, String>,
 }
 
+/// Extract field information including nested fields
+fn extract_field_info(field: &iceberg::spec::NestedFieldRef) -> FieldInfo {
+    use iceberg::spec::Type;
+
+    let nested_fields = match field.field_type.as_ref() {
+        Type::Primitive(_) => Vec::new(),
+        Type::Struct(struct_type) => {
+            struct_type.fields()
+                .iter()
+                .map(|nested_field| extract_field_info(nested_field))
+                .collect()
+        }
+        Type::List(list_type) => {
+            // List has an element field
+            vec![FieldInfo {
+                id: list_type.element_field.id,
+                name: "element".to_string(),
+                field_type: format!("{}", list_type.element_field.field_type),
+                required: list_type.element_field.required,
+                nested_fields: extract_nested_from_type(&list_type.element_field.field_type),
+            }]
+        }
+        Type::Map(map_type) => {
+            // Map has key and value fields
+            vec![
+                FieldInfo {
+                    id: map_type.key_field.id,
+                    name: "key".to_string(),
+                    field_type: format!("{}", map_type.key_field.field_type),
+                    required: map_type.key_field.required,
+                    nested_fields: extract_nested_from_type(&map_type.key_field.field_type),
+                },
+                FieldInfo {
+                    id: map_type.value_field.id,
+                    name: "value".to_string(),
+                    field_type: format!("{}", map_type.value_field.field_type),
+                    required: map_type.value_field.required,
+                    nested_fields: extract_nested_from_type(&map_type.value_field.field_type),
+                },
+            ]
+        }
+    };
+
+    FieldInfo {
+        id: field.id,
+        name: field.name.clone(),
+        field_type: format!("{}", field.field_type),
+        required: field.required,
+        nested_fields,
+    }
+}
+
+/// Extract nested fields from a type (handles Box<Type>)
+fn extract_nested_from_type(field_type: &Box<iceberg::spec::Type>) -> Vec<FieldInfo> {
+    use iceberg::spec::Type;
+
+    match field_type.as_ref() {
+        Type::Primitive(_) => Vec::new(),
+        Type::Struct(struct_type) => {
+            struct_type.fields()
+                .iter()
+                .map(|nested_field| extract_field_info(nested_field))
+                .collect()
+        }
+        Type::List(list_type) => {
+            vec![FieldInfo {
+                id: list_type.element_field.id,
+                name: "element".to_string(),
+                field_type: format!("{}", list_type.element_field.field_type),
+                required: list_type.element_field.required,
+                nested_fields: extract_nested_from_type(&list_type.element_field.field_type),
+            }]
+        }
+        Type::Map(map_type) => {
+            vec![
+                FieldInfo {
+                    id: map_type.key_field.id,
+                    name: "key".to_string(),
+                    field_type: format!("{}", map_type.key_field.field_type),
+                    required: map_type.key_field.required,
+                    nested_fields: extract_nested_from_type(&map_type.key_field.field_type),
+                },
+                FieldInfo {
+                    id: map_type.value_field.id,
+                    name: "value".to_string(),
+                    field_type: format!("{}", map_type.value_field.field_type),
+                    required: map_type.value_field.required,
+                    nested_fields: extract_nested_from_type(&map_type.value_field.field_type),
+                },
+            ]
+        }
+    }
+}
+
 impl TableMetadata {
     /// Extract metadata from an Iceberg table
     pub fn from_table(table: &Table) -> Result<Self> {
         let metadata = table.metadata();
 
-        // Extract schema fields
+        // Extract schema fields with nested field information
         let iceberg_schema = metadata.current_schema();
         let schema_info = SchemaInfo {
             schema_id: iceberg_schema.schema_id(),
@@ -74,12 +170,7 @@ impl TableMetadata {
                 .as_struct()
                 .fields()
                 .iter()
-                .map(|field| FieldInfo {
-                    id: field.id,
-                    name: field.name.clone(),
-                    field_type: format!("{}", field.field_type),
-                    required: field.required,
-                })
+                .map(|field| extract_field_info(field))
                 .collect(),
         };
 
@@ -145,6 +236,24 @@ impl TableMetadata {
             })
             .collect();
 
+        // Try to extract storage configuration from FileIO
+        // The FileIO contains the S3 endpoint and other storage properties
+        let mut storage_properties = HashMap::new();
+
+        // Get the file_io from the table and try to extract properties
+        // Note: This may need adjustment based on iceberg-rust's API
+        let _file_io = table.file_io();
+
+        // Try to get properties from the FileIO
+        // Unfortunately, iceberg-rust may not expose these directly
+        // For now, we'll try to infer from the location
+        let location_str = metadata.location();
+        if location_str.starts_with("s3://") || location_str.starts_with("s3a://") {
+            // S3 storage - properties would be in the FileIO config
+            // We'll need to check if we can access them
+            storage_properties.insert("storage.type".to_string(), "s3".to_string());
+        }
+
         Ok(Self {
             location: metadata.location().to_string(),
             schema: schema_info,
@@ -153,6 +262,7 @@ impl TableMetadata {
             properties,
             current_snapshot_id,
             snapshots,
+            storage_properties,
         })
     }
 
