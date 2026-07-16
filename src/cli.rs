@@ -11,6 +11,10 @@ pub struct Cli {
     #[arg(short, long, value_name = "FILE", env = "ICETEA_CONFIG")]
     pub config: Option<PathBuf>,
 
+    /// Path to log file (default: $XDG_STATE_HOME/icetea/icetea.log)
+    #[arg(long = "log-file", value_name = "FILE", env = "ICETEA_LOG")]
+    pub log_file: Option<PathBuf>,
+
     /// Enable verbose logging
     #[arg(short, long)]
     pub verbose: bool,

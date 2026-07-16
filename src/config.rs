@@ -9,7 +9,7 @@ use figment::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::cli::Cli;
 
@@ -203,6 +203,59 @@ impl Config {
         paths
     }
 
+    /// Default log path: `$XDG_STATE_HOME/icetea/icetea.log`, else `~/.local/state/icetea/icetea.log`.
+    /// Falls back to `./icetea.log` when neither `XDG_STATE_HOME` nor `HOME` is set.
+    pub fn default_log_path() -> PathBuf {
+        resolve_log_path(
+            std::env::var_os("XDG_STATE_HOME"),
+            std::env::var_os("HOME"),
+        )
+    }
+
+    /// Open the log file for append, creating parent directories as needed.
+    ///
+    /// Uses `explicit` when provided; otherwise [`default_log_path`]. If the
+    /// canonical location cannot be created or opened, falls back to `./icetea.log`.
+    pub fn open_log_file(explicit: Option<&Path>) -> Result<(std::fs::File, PathBuf)> {
+        use std::fs::OpenOptions;
+
+        if let Some(path) = explicit {
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create log directory {}", parent.display())
+                })?;
+            }
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .with_context(|| format!("Failed to open log file {}", path.display()))?;
+            return Ok((file, path.to_path_buf()));
+        }
+
+        let path = Self::default_log_path();
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                eprintln!(
+                    "warning: could not create log directory {}: {err}; falling back to ./icetea.log",
+                    parent.display()
+                );
+                return open_cwd_log();
+            }
+        }
+
+        match OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(file) => Ok((file, path)),
+            Err(err) => {
+                eprintln!(
+                    "warning: could not open log file {}: {err}; falling back to ./icetea.log",
+                    path.display()
+                );
+                open_cwd_log()
+            }
+        }
+    }
+
     fn default_config() -> Self {
         Self {
             catalogs: HashMap::new(),
@@ -210,6 +263,30 @@ impl Config {
             query: QueryConfig::default(),
         }
     }
+}
+
+fn resolve_log_path(
+    xdg_state_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> PathBuf {
+    let state_home = xdg_state_home
+        .map(PathBuf::from)
+        .or_else(|| home.map(|h| PathBuf::from(h).join(".local/state")));
+
+    match state_home {
+        Some(dir) => dir.join("icetea").join("icetea.log"),
+        None => PathBuf::from("icetea.log"),
+    }
+}
+
+fn open_cwd_log() -> Result<(std::fs::File, PathBuf)> {
+    let path = PathBuf::from("icetea.log");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .context("Failed to open fallback log file ./icetea.log")?;
+    Ok((file, path))
 }
 
 /// Parse catalog URI specs: `name=type:uri` or bare `uri` (defaults to rest / catalog_N)
@@ -277,6 +354,7 @@ mod tests {
     fn empty_cli() -> Cli {
         Cli {
             config: None,
+            log_file: None,
             verbose: false,
             catalogs: vec![],
             catalog_warehouses: vec![],
@@ -287,6 +365,30 @@ mod tests {
             max_rows: None,
             command: None,
         }
+    }
+
+    #[test]
+    fn resolve_log_path_prefers_xdg_state_home() {
+        let path = resolve_log_path(
+            Some("/tmp/xdg-state-test".into()),
+            Some("/home/user".into()),
+        );
+        assert_eq!(path, PathBuf::from("/tmp/xdg-state-test/icetea/icetea.log"));
+    }
+
+    #[test]
+    fn resolve_log_path_falls_back_to_home_local_state() {
+        let path = resolve_log_path(None, Some("/home/user".into()));
+        assert_eq!(
+            path,
+            PathBuf::from("/home/user/.local/state/icetea/icetea.log")
+        );
+    }
+
+    #[test]
+    fn resolve_log_path_falls_back_to_cwd_without_home() {
+        let path = resolve_log_path(None, None);
+        assert_eq!(path, PathBuf::from("icetea.log"));
     }
 
     #[test]

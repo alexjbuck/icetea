@@ -24,3 +24,6 @@ target
 # Added by cargo
 
 /target
+
+# CWD fallback log (canonical logs live under $XDG_STATE_HOME/icetea/)
+/icetea.log

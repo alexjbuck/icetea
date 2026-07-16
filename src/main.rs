@@ -19,23 +19,18 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging to file
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("icetea.log")?;
+    // Parse CLI first so --log-file / ICETEA_LOG can direct the log sink
+    let args = Cli::parse_args();
 
+    let (log_file, log_path) = Config::open_log_file(args.log_file.as_deref())?;
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_writer(std::sync::Mutex::new(log_file))
         .with_ansi(false)
         .init();
-
-    // Parse CLI arguments
-    let args = Cli::parse_args();
+    tracing::info!("Logging to {}", log_path.display());
 
     // Load configuration (CLI > env > config file > defaults)
     let config = Config::load(&args)?;
