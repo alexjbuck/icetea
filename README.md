@@ -235,6 +235,44 @@ DataFusion automatically discovers namespaces and tables through the provider in
 
 **Note**: The `datafusion_iceberg` v0.7 crate is incompatible with `iceberg` v0.7 (built against the older `iceberg_rust` crate), so we implemented our own custom integration following DataFusion's catalog provider pattern.
 
+## Releasing
+
+Version bumps and changelog entries come from [knope](https://knope.tech) **changesets** only (not conventional commits).
+
+Install tools with [mise](https://mise.jdx.dev) (includes `cargo:knope`):
+
+```bash
+mise install
+```
+
+### Document a change
+
+When a PR includes a user-facing change, create a changeset:
+
+```bash
+knope document-change
+```
+
+This writes a Markdown file under `.changeset/`. Commit it with the PR.
+
+### Dry-run a release
+
+```bash
+knope release --dry-run
+```
+
+### Publish a GitHub Release
+
+In GitHub Actions, run the **Release** workflow (`workflow_dispatch`). It uses the built-in `GITHUB_TOKEN` with `contents: write` to push the release commit/tag and create the GitHub Release — no PAT secret required.
+
+Alternatively, locally with a token that can write contents:
+
+```bash
+GITHUB_TOKEN=... knope release
+```
+
+This consumes pending changesets, bumps `Cargo.toml` / `Cargo.lock`, updates `CHANGELOG.md`, pushes a release commit, and creates a GitHub Release. crates.io publishing is not configured yet.
+
 ## Contributing
 
 Contributions are welcome! Areas that need work:
