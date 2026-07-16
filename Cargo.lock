@@ -2708,7 +2708,7 @@ dependencies = [
 
 [[package]]
 name = "icetea"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2721,6 +2721,7 @@ dependencies = [
  "futures",
  "iceberg",
  "iceberg-catalog-rest",
+ "opendal",
  "proptest",
  "ratatui",
  "reqwest 0.13.1",

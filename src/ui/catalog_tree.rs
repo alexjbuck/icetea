@@ -83,10 +83,25 @@ pub fn render_catalog_tree(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
 
+    let focused = app.focused_pane == crate::app::PaneFocus::Tree;
+    let title = if focused {
+        "Catalogs  [focused]"
+    } else {
+        "Catalogs"
+    };
+    let border_style = if focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default()
+    };
+
     let list = List::new(items)
-        .block(Block::default()
-            .title("Catalogs")
-            .borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(border_style),
+        )
         .highlight_style(Style::default().bg(Color::DarkGray));
 
     // We're manually handling selection highlighting in the items themselves

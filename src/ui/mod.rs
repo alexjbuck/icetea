@@ -14,7 +14,7 @@ use ratatui::{
 };
 
 /// Render the main UI
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -39,7 +39,7 @@ fn render_title_bar(frame: &mut Frame, area: Rect, _app: &App) {
     frame.render_widget(title_bar, area);
 }
 
-fn render_main_content(frame: &mut Frame, area: Rect, app: &App) {
+fn render_main_content(frame: &mut Frame, area: Rect, app: &mut App) {
     match app.view_state {
         ViewState::Browser => {
             render_browser_view(frame, area, app);
@@ -62,7 +62,7 @@ fn render_main_content(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn render_browser_view(frame: &mut Frame, area: Rect, app: &App) {
+fn render_browser_view(frame: &mut Frame, area: Rect, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -80,6 +80,22 @@ fn render_help(frame: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(Span::styled("IceTea - Keyboard Shortcuts", Style::default().add_modifier(Modifier::BOLD))),
         Line::from(""),
+        Line::from(vec![
+            Span::styled("Tab", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Switch focus between catalog tree and detail pane"),
+        ]),
+        Line::from(vec![
+            Span::styled("j/k / ↑↓", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Navigate tree (or scroll detail when focused)"),
+        ]),
+        Line::from(vec![
+            Span::styled("Ctrl+u/d  Shift+↑/↓  PgUp/PgDn", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Page-scroll detail pane (when focused)"),
+        ]),
+        Line::from(vec![
+            Span::styled("g / G  (Home/End)", Style::default().fg(Color::Yellow)),
+            Span::raw(" - Jump detail to top / bottom (when focused)"),
+        ]),
         Line::from(vec![
             Span::styled("q", Style::default().fg(Color::Yellow)),
             Span::raw(" - Quit application"),
@@ -113,10 +129,20 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     let status_text = match app.view_state {
         ViewState::Browser => {
+            let focus = match app.focused_pane {
+                crate::app::PaneFocus::Tree => "focus:tree",
+                crate::app::PaneFocus::Detail => "focus:detail",
+            };
             if let Some(msg) = &app.status_message {
-                format!("{} | ↑↓/jk:nav  ←→/hl:expand  Enter:toggle  ?:help  q:quit", msg)
+                format!(
+                    "{} | {} | Tab:switch  ↑↓/jk  Ctrl+u/d:page  ←→/hl  Enter  ?:help  q",
+                    msg, focus
+                )
             } else {
-                format!("Connected: {} | ↑↓/jk:nav  ←→/hl:expand  Enter:toggle  ?:help  q:quit", connected_count)
+                format!(
+                    "Connected: {} | {} | Tab:switch  ↑↓/jk  Ctrl+u/d:page  ←→/hl  Enter  ?:help  q",
+                    connected_count, focus
+                )
             }
         }
         ViewState::Query => {

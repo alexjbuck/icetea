@@ -55,6 +55,12 @@ impl CatalogManager {
                     props.insert(key.clone(), value.clone());
                 }
 
+                // IceTea runs as a local TUI — never hang probing EC2 instance metadata
+                // when S3 credentials are missing or incomplete.
+                props
+                    .entry("s3.disable-ec2-metadata".to_string())
+                    .or_insert_with(|| "true".to_string());
+
                 // Create REST catalog using the builder
                 let builder = RestCatalogBuilder::default();
                 let rest_catalog = builder
@@ -188,7 +194,7 @@ impl CatalogManager {
     /// This gets the storage configuration (like S3 endpoint) that the catalog server provides
     pub async fn fetch_table_storage_config(
         &self,
-        catalog_name: &str,
+        _catalog_name: &str,
         catalog_config: &CatalogConfig,
         namespace: &str,
         table_name: &str,

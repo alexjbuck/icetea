@@ -1,6 +1,6 @@
 [package]
 name = "icetea"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["icetea contributors"]
 description = "A TUI for connecting directly with Apache Iceberg catalogs"
@@ -41,6 +41,7 @@ chrono = "0.4"
 uuid = { version = "1.0", features = ["v4"] }
 reqwest = { version = "0.13.1", features = ["json"] }
 urlencoding = "2.1.3"
+opendal = { version = "0.54", features = ["services-s3", "services-fs"] }
 
 [dev-dependencies]
 proptest = "1.5"

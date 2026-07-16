@@ -126,6 +126,9 @@ where
             }
         }
 
+        // Apply any completed background stats (non-blocking)
+        app.poll_stats();
+
         // Check if selection changed and load table metadata if needed
         let current_key = app.selected_item().map(|item| item.key.clone());
         if current_key != prev_selected_key {

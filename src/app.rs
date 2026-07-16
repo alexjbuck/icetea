@@ -1,10 +1,27 @@
 //! Application state and event handling
 
 use crate::config::Config;
-use crate::iceberg::{CatalogManager, TableMetadata};
+use crate::iceberg::{
+    CatalogManager, LazyStats, StatsProgress, TableMetadata, TableStats, collect_table_stats,
+};
 use anyhow::Result;
-use iceberg::Catalog;
 use std::collections::HashSet;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
+/// Events from a background stats collection job.
+enum StatsJobEvent {
+    Progress {
+        table_key: String,
+        generation: u64,
+        progress: StatsProgress,
+    },
+    Done {
+        table_key: String,
+        generation: u64,
+        stats: TableStats,
+    },
+}
 
 /// Main application state
 pub struct App {
@@ -46,6 +63,38 @@ pub struct App {
 
     /// Key of the table whose metadata is currently cached
     pub cached_table_key: Option<String>,
+
+    /// Monotonic generation so stale stats jobs are ignored after selection changes.
+    stats_generation: u64,
+
+    /// Receiver for completed background stats jobs.
+    stats_rx: mpsc::UnboundedReceiver<StatsJobEvent>,
+
+    /// Sender kept so we can spawn jobs (cloned per spawn).
+    stats_tx: mpsc::UnboundedSender<StatsJobEvent>,
+
+    /// Abort handle for the in-flight stats task (if any).
+    stats_task: Option<JoinHandle<()>>,
+
+    /// Which browser pane receives navigation keys.
+    pub focused_pane: PaneFocus,
+
+    /// Vertical scroll offset (lines) for the detail panel.
+    pub detail_scroll: u16,
+
+    /// Visible content rows in the detail panel (updated each render).
+    pub detail_viewport_rows: u16,
+
+    /// Total lines in the current detail content (updated each render).
+    pub detail_line_count: u16,
+}
+
+/// Which pane has keyboard focus in the browser view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PaneFocus {
+    #[default]
+    Tree,
+    Detail,
 }
 
 /// Represents an item in the tree view
@@ -97,6 +146,7 @@ pub enum QueryResult {
 impl App {
     /// Create a new application instance
     pub fn new(config: Config) -> Self {
+        let (stats_tx, stats_rx) = mpsc::unbounded_channel();
         Self {
             config,
             view_state: ViewState::Browser,
@@ -111,6 +161,14 @@ impl App {
             last_result: None,
             selected_table_metadata: None,
             cached_table_key: None,
+            stats_generation: 0,
+            stats_rx,
+            stats_tx,
+            stats_task: None,
+            focused_pane: PaneFocus::Tree,
+            detail_scroll: 0,
+            detail_viewport_rows: 0,
+            detail_line_count: 0,
         }
     }
 
@@ -232,6 +290,7 @@ impl App {
     pub fn select_previous(&mut self) {
         if self.selected_index > 0 {
             self.selected_index -= 1;
+            self.reset_detail_scroll();
         }
     }
 
@@ -239,7 +298,49 @@ impl App {
     pub fn select_next(&mut self) {
         if !self.tree_items.is_empty() && self.selected_index < self.tree_items.len() - 1 {
             self.selected_index += 1;
+            self.reset_detail_scroll();
         }
+    }
+
+    /// Reset detail pane scroll (e.g. when selection changes).
+    pub fn reset_detail_scroll(&mut self) {
+        self.detail_scroll = 0;
+    }
+
+    /// Toggle focus between catalog tree and detail pane.
+    pub fn toggle_focused_pane(&mut self) {
+        self.focused_pane = match self.focused_pane {
+            PaneFocus::Tree => PaneFocus::Detail,
+            PaneFocus::Detail => PaneFocus::Tree,
+        };
+    }
+
+    /// Scroll the detail pane by `delta` lines (negative = up).
+    pub fn scroll_detail(&mut self, delta: i32) {
+        let max = self.max_detail_scroll();
+        let next = (self.detail_scroll as i32 + delta).clamp(0, max as i32);
+        self.detail_scroll = next as u16;
+    }
+
+    /// Scroll the detail pane by roughly one viewport page.
+    pub fn scroll_detail_page(&mut self, down: bool) {
+        let page = self.detail_viewport_rows.saturating_sub(2).max(1) as i32;
+        self.scroll_detail(if down { page } else { -page });
+    }
+
+    /// Jump detail scroll to top.
+    pub fn scroll_detail_home(&mut self) {
+        self.detail_scroll = 0;
+    }
+
+    /// Jump detail scroll to bottom.
+    pub fn scroll_detail_end(&mut self) {
+        self.detail_scroll = self.max_detail_scroll();
+    }
+
+    fn max_detail_scroll(&self) -> u16 {
+        self.detail_line_count
+            .saturating_sub(self.detail_viewport_rows.max(1))
     }
 
     /// Collapse selected item (or move to parent)
@@ -279,13 +380,14 @@ impl App {
         self.tree_items.get(self.selected_index)
     }
 
-    /// Load metadata for the currently selected table (if it's a table)
-    /// Returns true if metadata was loaded or is already cached
+    /// Load metadata for the currently selected table (if it's a table).
+    /// Returns true if metadata was loaded or is already cached.
+    /// Heavy stats are kicked off in the background and applied via [`poll_stats`].
     pub async fn load_selected_table_metadata(&mut self) -> bool {
         let item = match self.selected_item() {
             Some(item) if item.item_type == TreeItemType::Table => item.clone(),
             _ => {
-                // Not a table, clear cached metadata
+                self.abort_stats_task();
                 self.selected_table_metadata = None;
                 self.cached_table_key = None;
                 return false;
@@ -308,6 +410,7 @@ impl App {
         let namespace = parts[1];
         let table_name = parts[2];
 
+        self.abort_stats_task();
         self.status_message = Some(format!("Loading metadata for {}...", item.name));
         self.loading = true;
 
@@ -327,8 +430,12 @@ impl App {
 
                         self.selected_table_metadata = Some(metadata);
                         self.cached_table_key = Some(item.key.clone());
-                        self.status_message = Some(format!("Loaded metadata for {}", item.name));
+                        self.reset_detail_scroll();
                         self.loading = false;
+                        self.status_message =
+                            Some(format!("Loaded metadata for {} (scanning stats…)", item.name));
+
+                        self.spawn_stats_task(item.key.clone(), table);
                         true
                     }
                     Err(e) => {
@@ -342,6 +449,100 @@ impl App {
                 self.status_message = Some(format!("Failed to load table: {}", e));
                 self.loading = false;
                 false
+            }
+        }
+    }
+
+    /// Abort any in-flight stats job and bump the generation so late results are ignored.
+    fn abort_stats_task(&mut self) {
+        self.stats_generation = self.stats_generation.wrapping_add(1);
+        if let Some(handle) = self.stats_task.take() {
+            handle.abort();
+        }
+    }
+
+    /// Spawn background collection of file/orphan stats for a table.
+    fn spawn_stats_task(&mut self, table_key: String, table: iceberg::table::Table) {
+        self.stats_generation = self.stats_generation.wrapping_add(1);
+        let generation = self.stats_generation;
+        let tx = self.stats_tx.clone();
+        let key_for_progress = table_key.clone();
+        let storage_props = self
+            .selected_table_metadata
+            .as_ref()
+            .map(|m| m.storage_properties.clone())
+            .unwrap_or_default();
+
+        let handle = tokio::spawn(async move {
+            let stats = collect_table_stats(&table, &storage_props, |progress| {
+                let _ = tx.send(StatsJobEvent::Progress {
+                    table_key: key_for_progress.clone(),
+                    generation,
+                    progress,
+                });
+            })
+            .await;
+
+            let _ = tx.send(StatsJobEvent::Done {
+                table_key,
+                generation,
+                stats,
+            });
+        });
+        self.stats_task = Some(handle);
+    }
+
+    /// Apply any completed background stats without blocking.
+    pub fn poll_stats(&mut self) {
+        while let Ok(event) = self.stats_rx.try_recv() {
+            match event {
+                StatsJobEvent::Progress {
+                    table_key,
+                    generation,
+                    progress,
+                } => {
+                    if generation != self.stats_generation {
+                        continue;
+                    }
+                    if self.cached_table_key.as_ref() != Some(&table_key) {
+                        continue;
+                    }
+                    if let Some(metadata) = self.selected_table_metadata.as_mut() {
+                        let label = match progress.total {
+                            Some(total) => {
+                                format!("{} {}/{}", progress.phase, progress.done, total)
+                            }
+                            None => progress.phase.clone(),
+                        };
+                        self.status_message = Some(format!("Stats: {}", label));
+                        metadata.stats = LazyStats::Loading(progress);
+                    }
+                }
+                StatsJobEvent::Done {
+                    table_key,
+                    generation,
+                    stats,
+                } => {
+                    if generation != self.stats_generation {
+                        continue;
+                    }
+                    if self.cached_table_key.as_ref() != Some(&table_key) {
+                        continue;
+                    }
+                    if let Some(metadata) = self.selected_table_metadata.as_mut() {
+                        let err = stats.storage_error.clone();
+                        metadata.stats = LazyStats::Ready(stats);
+                        self.status_message = Some(match err {
+                            Some(e) => format!(
+                                "Stats partial for {} — {}",
+                                table_key,
+                                e.chars().take(80).collect::<String>()
+                            ),
+                            None => format!("Stats ready for {}", table_key),
+                        });
+                    }
+                    self.stats_task = None;
+                }
             }
         }
     }
@@ -368,12 +569,79 @@ impl App {
                         self.should_quit = true;
                         false
                     }
-                    // Navigation - up
+                    // Tab: switch focus between tree and detail
+                    (KeyCode::Tab, _) => {
+                        self.toggle_focused_pane();
+                        false
+                    }
+                    // Detail-pane scrolling when detail is focused
+                    (KeyCode::Up, KeyModifiers::NONE) | (KeyCode::Char('k'), KeyModifiers::NONE)
+                        if self.focused_pane == PaneFocus::Detail =>
+                    {
+                        self.scroll_detail(-1);
+                        false
+                    }
+                    (KeyCode::Down, KeyModifiers::NONE) | (KeyCode::Char('j'), KeyModifiers::NONE)
+                        if self.focused_pane == PaneFocus::Detail =>
+                    {
+                        self.scroll_detail(1);
+                        false
+                    }
+                    (KeyCode::PageUp, _) if self.focused_pane == PaneFocus::Detail => {
+                        self.scroll_detail_page(false);
+                        false
+                    }
+                    (KeyCode::PageDown, _) if self.focused_pane == PaneFocus::Detail => {
+                        self.scroll_detail_page(true);
+                        false
+                    }
+                    // Mac keyboards often lack PgUp/PgDn; Ctrl+u/d and Shift+↑/↓ page-scroll.
+                    (KeyCode::Char('u'), KeyModifiers::CONTROL)
+                        if self.focused_pane == PaneFocus::Detail =>
+                    {
+                        self.scroll_detail_page(false);
+                        false
+                    }
+                    (KeyCode::Char('d'), KeyModifiers::CONTROL)
+                        if self.focused_pane == PaneFocus::Detail =>
+                    {
+                        self.scroll_detail_page(true);
+                        false
+                    }
+                    (KeyCode::Up, KeyModifiers::SHIFT) if self.focused_pane == PaneFocus::Detail => {
+                        self.scroll_detail_page(false);
+                        false
+                    }
+                    (KeyCode::Down, KeyModifiers::SHIFT)
+                        if self.focused_pane == PaneFocus::Detail =>
+                    {
+                        self.scroll_detail_page(true);
+                        false
+                    }
+                    (KeyCode::Home, _) | (KeyCode::Char('g'), KeyModifiers::NONE)
+                        if self.focused_pane == PaneFocus::Detail =>
+                    {
+                        self.scroll_detail_home();
+                        false
+                    }
+                    (KeyCode::End, _) | (KeyCode::Char('G'), KeyModifiers::SHIFT)
+                        if self.focused_pane == PaneFocus::Detail =>
+                    {
+                        self.scroll_detail_end();
+                        false
+                    }
+                    // Plain 'G' (some terminals don't set SHIFT on uppercase)
+                    (KeyCode::Char('G'), KeyModifiers::NONE)
+                        if self.focused_pane == PaneFocus::Detail =>
+                    {
+                        self.scroll_detail_end();
+                        false
+                    }
+                    // Tree navigation (also used when tree is focused)
                     (KeyCode::Up, KeyModifiers::NONE) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
                         self.select_previous();
                         false
                     }
-                    // Navigation - down
                     (KeyCode::Down, KeyModifiers::NONE) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
                         self.select_next();
                         false

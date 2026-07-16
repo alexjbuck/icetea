@@ -1,5 +1,6 @@
 //! Table metadata operations and snapshot handling
 
+use crate::iceberg::stats::{LazyStats, collect_sync_stats};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use iceberg::table::Table;
@@ -16,6 +17,10 @@ pub struct TableMetadata {
     pub current_snapshot_id: Option<i64>,
     pub snapshots: Vec<SnapshotInfo>,
     pub storage_properties: HashMap<String, String>,
+    /// File/snapshot/orphan statistics (loaded asynchronously).
+    pub stats: LazyStats,
+    /// Sync-only preview filled immediately (summary fields, metadata log times).
+    pub sync_stats: crate::iceberg::stats::TableStats,
 }
 
 /// Schema information
@@ -158,7 +163,8 @@ fn extract_nested_from_type(field_type: &Box<iceberg::spec::Type>) -> Vec<FieldI
 }
 
 impl TableMetadata {
-    /// Extract metadata from an Iceberg table
+    /// Extract display metadata from an Iceberg table (sync; no storage I/O).
+    /// Heavy stats are left as [`LazyStats::Loading`] for a background task.
     pub fn from_table(table: &Table) -> Result<Self> {
         let metadata = table.metadata();
 
@@ -236,23 +242,14 @@ impl TableMetadata {
             })
             .collect();
 
-        // Try to extract storage configuration from FileIO
-        // The FileIO contains the S3 endpoint and other storage properties
+        // Infer storage type from location
         let mut storage_properties = HashMap::new();
-
-        // Get the file_io from the table and try to extract properties
-        // Note: This may need adjustment based on iceberg-rust's API
-        let _file_io = table.file_io();
-
-        // Try to get properties from the FileIO
-        // Unfortunately, iceberg-rust may not expose these directly
-        // For now, we'll try to infer from the location
         let location_str = metadata.location();
         if location_str.starts_with("s3://") || location_str.starts_with("s3a://") {
-            // S3 storage - properties would be in the FileIO config
-            // We'll need to check if we can access them
             storage_properties.insert("storage.type".to_string(), "s3".to_string());
         }
+
+        let sync_stats = collect_sync_stats(table);
 
         Ok(Self {
             location: metadata.location().to_string(),
@@ -263,6 +260,13 @@ impl TableMetadata {
             current_snapshot_id,
             snapshots,
             storage_properties,
+            stats: LazyStats::Loading(crate::iceberg::stats::StatsProgress {
+                phase: "starting".into(),
+                done: 0,
+                total: None,
+                partial: sync_stats.clone(),
+            }),
+            sync_stats,
         })
     }
 
@@ -295,21 +299,33 @@ impl SnapshotInfo {
         self.summary.get(key).map(|s| s.as_str())
     }
 
-    /// Get added files count
+    /// Get added data files count
     pub fn added_files_count(&self) -> Option<i64> {
-        self.summary_value("added-files-count")
+        self.summary_value("added-data-files")
             .and_then(|s| s.parse().ok())
     }
 
-    /// Get deleted files count
+    /// Get deleted data files count
     pub fn deleted_files_count(&self) -> Option<i64> {
-        self.summary_value("deleted-files-count")
+        self.summary_value("deleted-data-files")
             .and_then(|s| s.parse().ok())
     }
 
     /// Get total records
     pub fn total_records(&self) -> Option<i64> {
         self.summary_value("total-records")
+            .and_then(|s| s.parse().ok())
+    }
+
+    /// Get total data files
+    pub fn total_data_files(&self) -> Option<i64> {
+        self.summary_value("total-data-files")
+            .and_then(|s| s.parse().ok())
+    }
+
+    /// Get total files size in bytes
+    pub fn total_files_size(&self) -> Option<i64> {
+        self.summary_value("total-files-size")
             .and_then(|s| s.parse().ok())
     }
 }
