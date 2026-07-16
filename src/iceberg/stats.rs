@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use futures::stream::{self, StreamExt};
-use iceberg::io::FileIO;
+use iceberg::io::{FileIO, FileIOBuilder};
 use iceberg::spec::{ManifestContentType, Struct};
 use iceberg::table::Table;
 use opendal::EntryMode;
@@ -10,6 +10,8 @@ use opendal::Operator;
 use opendal::services::{FsConfig, S3Config};
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, info, warn};
+
+use crate::iceberg::catalog::storage_factory_for_uri;
 #[derive(Debug, Clone)]
 pub struct StatsProgress {
     /// Short phase name shown in the UI.
@@ -438,7 +440,7 @@ pub async fn collect_table_stats(
 /// Rebuild FileIO with loadTable storage config + env AWS creds, and never use IMDS.
 fn resolve_file_io(table: &Table, storage_props: &HashMap<String, String>) -> Result<FileIO> {
     let location = table.metadata().location();
-    let (_scheme, mut props, extensions) = table.file_io().clone().into_builder().into_parts();
+    let mut props = table.file_io().config().props().clone();
 
     for (k, v) in storage_props {
         if k.starts_with("s3.") || k.starts_with("client.") || k == "region" {
@@ -457,12 +459,9 @@ fn resolve_file_io(table: &Table, storage_props: &HashMap<String, String>) -> Re
         keys
     );
 
-    FileIO::from_path(location)
-        .map_err(|e| anyhow::anyhow!("Invalid table location {location}: {e}"))?
+    Ok(FileIOBuilder::new(storage_factory_for_uri(Some(location)))
         .with_props(props)
-        .with_extensions(extensions)
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to build FileIO: {e}"))
+        .build())
 }
 
 fn apply_env_s3_creds(props: &mut HashMap<String, String>) {
@@ -992,13 +991,8 @@ fn build_operator_for_path(
     table_location: &str,
     prefix: &str,
 ) -> Result<(Operator, String)> {
-    let builder = file_io.clone().into_builder();
-    let (scheme_str, props, _ext) = builder.into_parts();
-    let scheme = if scheme_str.is_empty() {
-        scheme_of(table_location)
-    } else {
-        scheme_str
-    };
+    let props = file_io.config().props().clone();
+    let scheme = scheme_of(table_location);
 
     match scheme.as_str() {
         "s3" | "s3a" | "s3n" => {
@@ -1006,17 +1000,13 @@ fn build_operator_for_path(
                 .with_context(|| format!("Invalid S3 path: {}", prefix))?;
             let mut cfg = s3_config_from_props(props);
             cfg.bucket = bucket;
-            let op = Operator::from_config(cfg)
-                .context("Failed to build S3 operator")?
-                .finish();
+            let op = Operator::from_config(cfg).context("Failed to build S3 operator")?;
             Ok((op, relative))
         }
         "file" | "fs" | "" => {
             let mut cfg = FsConfig::default();
             cfg.root = Some("/".to_string());
-            let op = Operator::from_config(cfg)
-                .context("Failed to build FS operator")?
-                .finish();
+            let op = Operator::from_config(cfg).context("Failed to build FS operator")?;
             let relative = strip_file_scheme(prefix)
                 .trim_start_matches('/')
                 .to_string();
@@ -1067,7 +1057,7 @@ fn s3_config_from_props(mut props: HashMap<String, String>) -> S3Config {
     }
     if let Some(v) = props.remove("s3.allow-anonymous") {
         if ["true", "t", "1", "on"].contains(&v.to_lowercase().as_str()) {
-            cfg.allow_anonymous = true;
+            cfg.skip_signature = true;
         }
     }
     if let Some(v) = props.remove("s3.disable-ec2-metadata") {

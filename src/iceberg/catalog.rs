@@ -4,8 +4,10 @@ use crate::config::CatalogConfig;
 use crate::iceberg::catalog_provider::IcebergCatalogProvider;
 use anyhow::{Context, Result};
 use datafusion::catalog::CatalogProvider;
+use iceberg::io::StorageFactory;
 use iceberg::{Catalog, CatalogBuilder};
 use iceberg_catalog_rest::RestCatalogBuilder;
+use iceberg_storage_opendal::OpenDalStorageFactory;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -61,8 +63,11 @@ impl CatalogManager {
                     .entry("s3.disable-ec2-metadata".to_string())
                     .or_insert_with(|| "true".to_string());
 
+                // Iceberg 0.9 requires an explicit StorageFactory for FileIO.
+                let storage_factory = storage_factory_for_uri(config.warehouse.as_deref());
+
                 // Create REST catalog using the builder
-                let builder = RestCatalogBuilder::default();
+                let builder = RestCatalogBuilder::default().with_storage_factory(storage_factory);
                 let rest_catalog = builder
                     .load(name.clone(), props)
                     .await
@@ -358,4 +363,23 @@ async fn get_oauth2_token(token_url: &str, credential: &str, scope: Option<&Stri
     let token_response: TokenResponse = response.json().await.context("Failed to parse token response")?;
 
     Ok(token_response.access_token)
+}
+
+/// Pick an OpenDAL storage factory from a warehouse/table URI scheme.
+pub(crate) fn storage_factory_for_uri(uri: Option<&str>) -> Arc<dyn StorageFactory> {
+    let scheme = uri
+        .and_then(|u| u.split_once("://").map(|(s, _)| s))
+        .unwrap_or("s3");
+
+    match scheme {
+        "file" | "fs" => Arc::new(OpenDalStorageFactory::Fs),
+        "s3a" | "s3n" => Arc::new(OpenDalStorageFactory::S3 {
+            configured_scheme: scheme.to_string(),
+            customized_credential_load: None,
+        }),
+        _ => Arc::new(OpenDalStorageFactory::S3 {
+            configured_scheme: "s3".to_string(),
+            customized_credential_load: None,
+        }),
+    }
 }

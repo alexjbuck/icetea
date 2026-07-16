@@ -13,9 +13,8 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
-use iceberg::table::Table as IcebergTable;
 use iceberg::spec::{PrimitiveType, Type as IcebergType};
-use std::any::Any;
+use iceberg::table::Table as IcebergTable;
 use std::fmt;
 use std::sync::Arc;
 use futures::stream;
@@ -124,10 +123,6 @@ impl IcebergTableProvider {
 
 #[async_trait]
 impl TableProvider for IcebergTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -175,18 +170,18 @@ struct IcebergScanExec {
     table: Arc<IcebergTable>,
     projected_schema: SchemaRef,
     metrics: ExecutionPlanMetricsSet,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
 }
 
 impl IcebergScanExec {
     fn new(table: Arc<IcebergTable>, projected_schema: SchemaRef) -> Self {
         // Create plan properties for a single partition, bounded execution
-        let properties = PlanProperties::new(
+        let properties = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(projected_schema.clone()),
             Partitioning::UnknownPartitioning(1),
             EmissionType::Incremental,
             Boundedness::Bounded,
-        );
+        ));
 
         Self {
             table,
@@ -208,15 +203,11 @@ impl ExecutionPlan for IcebergScanExec {
         "IcebergScanExec"
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.projected_schema.clone()
     }
 
-    fn properties(&self) -> &datafusion::physical_plan::PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 
@@ -249,10 +240,5 @@ impl ExecutionPlan for IcebergScanExec {
 
     fn metrics(&self) -> Option<datafusion::physical_plan::metrics::MetricsSet> {
         Some(self.metrics.clone_inner())
-    }
-
-    fn statistics(&self) -> DataFusionResult<datafusion::common::Statistics> {
-        // TODO: Get statistics from Iceberg metadata
-        Ok(datafusion::common::Statistics::new_unknown(&self.schema()))
     }
 }

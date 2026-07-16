@@ -5,7 +5,6 @@ use datafusion::catalog::{CatalogProvider, SchemaProvider};
 use datafusion::datasource::TableProvider;
 use datafusion::error::{DataFusionError, Result as DataFusionResult};
 use iceberg::Catalog;
-use std::any::Any;
 use std::sync::Arc;
 use tracing::warn;
 
@@ -24,10 +23,6 @@ impl IcebergCatalogProvider {
 }
 
 impl CatalogProvider for IcebergCatalogProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema_names(&self) -> Vec<String> {
         // Note: This is synchronous but Iceberg's list_namespaces is async
         // We'll need to handle this appropriately in the caller
@@ -71,10 +66,6 @@ impl IcebergSchemaProvider {
 
 #[async_trait]
 impl SchemaProvider for IcebergSchemaProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn table_names(&self) -> Vec<String> {
         // Synchronous method, but listing tables is async
         // Return empty for now - tables will be loaded lazily
