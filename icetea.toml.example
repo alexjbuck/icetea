@@ -1,5 +1,9 @@
 # IceTea Configuration Example
 # Copy this file to icetea.toml and modify as needed
+#
+# Precedence: CLI flags > environment variables > this file > defaults
+# Nested env vars use `__`, e.g. ICETEA_UI__THEME=dark
+# See README for full CLI/env equivalents of every field.
 
 # Catalog configurations
 # You can define multiple catalogs

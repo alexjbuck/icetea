@@ -37,8 +37,8 @@ async fn main() -> Result<()> {
     // Parse CLI arguments
     let args = Cli::parse_args();
 
-    // Load configuration
-    let config = Config::load(args.config.clone(), args.catalogs.clone())?;
+    // Load configuration (CLI > env > config file > defaults)
+    let config = Config::load(&args)?;
 
     // If there's a subcommand, execute it and exit
     if let Some(command) = args.command {

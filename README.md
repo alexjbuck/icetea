@@ -53,11 +53,12 @@ The binary will be at `target/release/icetea`.
 ## Configuration
 
 IceTea supports multiple configuration methods with the following precedence (highest to lowest):
-1. In-application configuration
-2. Command-line arguments
-3. Environment variables
-4. Configuration file
-5. Defaults
+1. Command-line arguments
+2. Environment variables
+3. Configuration file
+4. Defaults
+
+Every setting in the config file can also be set via env vars or CLI flags.
 
 ### Configuration File
 
@@ -84,19 +85,46 @@ max_rows = 10000
 
 ### Environment Variables
 
+Nested keys use `__` as a separator (`ICETEA_` prefix):
+
 ```bash
 export ICETEA_CONFIG=/path/to/icetea.toml
-export ICETEA_CATALOGS="rest:http://localhost:8181"
+
+# UI / query
+export ICETEA_UI__THEME=dark
+export ICETEA_UI__REFRESH_INTERVAL=30
+export ICETEA_QUERY__TIMEOUT=300
+export ICETEA_QUERY__MAX_ROWS=10000
+
+# Full nested catalog config
+export ICETEA_CATALOGS__MY_REST_CATALOG__CATALOG_TYPE=rest
+export ICETEA_CATALOGS__MY_REST_CATALOG__URI=http://localhost:8181
+export ICETEA_CATALOGS__MY_REST_CATALOG__WAREHOUSE=s3://my-bucket/warehouse
+export ICETEA_CATALOGS__MY_REST_CATALOG__PROPERTIES__TOKEN=my-auth-token
+
+# Convenience CLI-style encodings (comma-separated, same format as flags)
+export ICETEA_CATALOG_URIS="my_rest_catalog=rest:http://localhost:8181"
+export ICETEA_CATALOG_WAREHOUSES="my_rest_catalog=s3://my-bucket/warehouse"
+export ICETEA_CATALOG_PROPERTIES="my_rest_catalog.token=my-auth-token"
 ```
 
 ### Command-Line Arguments
 
 ```bash
-# Start TUI with catalog
-icetea --catalog "my_catalog=rest:http://localhost:8181"
+# Start TUI with a fully specified catalog
+icetea \
+  --catalog "my_catalog=rest:http://localhost:8181" \
+  --catalog-warehouse "my_catalog=s3://my-bucket/warehouse" \
+  --catalog-property "my_catalog.token=my-auth-token" \
+  --catalog-property "my_catalog.credential=id:secret"
 
 # Multiple catalogs
-icetea --catalog "cat1=rest:http://host1:8181" --catalog "cat2=rest:http://host2:8181"
+icetea \
+  --catalog "cat1=rest:http://host1:8181" \
+  --catalog "cat2=rest:http://host2:8181"
+
+# UI / query settings
+icetea --theme light --refresh-interval 60 --query-timeout 120 --max-rows 500
 
 # Use config file
 icetea --config /path/to/icetea.toml

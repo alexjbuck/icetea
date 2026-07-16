@@ -1,6 +1,8 @@
 //! Configuration management using figment for layered config
+//!
+//! Precedence (highest wins): CLI arguments > environment variables > config file > defaults
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use figment::{
     providers::{Env, Format, Serialized, Toml},
     Figment,
@@ -8,6 +10,8 @@ use figment::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+use crate::cli::Cli;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -96,9 +100,8 @@ fn default_max_rows() -> usize {
 }
 
 impl Config {
-    /// Load configuration from multiple sources with priority:
-    /// defaults < default config locations < explicit config file < environment variables < CLI arguments
-    pub fn load(config_path: Option<PathBuf>, cli_catalogs: Vec<String>) -> Result<Self> {
+    /// Load configuration with precedence: defaults < config file < env < CLI
+    pub fn load(cli: &Cli) -> Result<Self> {
         let mut figment = Figment::new()
             // Start with defaults
             .merge(Serialized::defaults(Config::default_config()));
@@ -110,23 +113,76 @@ impl Config {
             }
         }
 
-        // Add explicit config file if provided (higher priority than defaults)
-        if let Some(path) = config_path {
+        // Explicit config file overrides default locations
+        if let Some(path) = &cli.config {
             figment = figment.merge(Toml::file(path));
         }
 
-        // Add environment variables (prefixed with ICETEA_)
-        figment = figment.merge(Env::prefixed("ICETEA_").split("_"));
+        // Environment variables (ICETEA_ prefix, `__` separates nested keys)
+        // Examples:
+        //   ICETEA_UI__THEME=dark
+        //   ICETEA_CATALOGS__MY_CAT__URI=http://localhost:8181
+        //   ICETEA_CATALOGS__MY_CAT__PROPERTIES__TOKEN=secret
+        figment = figment.merge(Env::prefixed("ICETEA_").split("__"));
 
-        // Merge CLI catalogs if provided
-        if !cli_catalogs.is_empty() {
-            let cli_catalog_configs = Self::parse_catalog_uris(cli_catalogs)?;
-            figment = figment.merge(Serialized::defaults(("catalogs", cli_catalog_configs)));
+        let mut config: Config = figment
+            .extract()
+            .context("Failed to load configuration")?;
+
+        // CLI arguments win over everything else
+        config.apply_cli_overrides(cli)?;
+
+        Ok(config)
+    }
+
+    fn apply_cli_overrides(&mut self, cli: &Cli) -> Result<()> {
+        if let Some(theme) = &cli.theme {
+            self.ui.theme = theme.clone();
+        }
+        if let Some(interval) = cli.refresh_interval {
+            self.ui.refresh_interval = interval;
+        }
+        if let Some(timeout) = cli.query_timeout {
+            self.query.timeout = timeout;
+        }
+        if let Some(max_rows) = cli.max_rows {
+            self.query.max_rows = max_rows;
         }
 
-        figment
-            .extract()
-            .context("Failed to load configuration")
+        if !cli.catalogs.is_empty() {
+            let cli_catalogs = parse_catalog_uris(&cli.catalogs)?;
+            for (name, catalog) in cli_catalogs {
+                self.catalogs
+                    .entry(name)
+                    .and_modify(|existing| {
+                        existing.catalog_type = catalog.catalog_type.clone();
+                        existing.uri = catalog.uri.clone();
+                    })
+                    .or_insert(catalog);
+            }
+        }
+
+        for warehouse_spec in &cli.catalog_warehouses {
+            let (name, warehouse) = parse_name_value(warehouse_spec, "catalog-warehouse")?;
+            let catalog = self.catalogs.get_mut(&name).with_context(|| {
+                format!(
+                    "Unknown catalog `{name}` in --catalog-warehouse (define it with --catalog or in config first)"
+                )
+            })?;
+            catalog.warehouse = Some(warehouse);
+        }
+
+        for prop_spec in &cli.catalog_properties {
+            let (name, key, value) = parse_catalog_property(prop_spec)?;
+            let catalog = self.catalogs.get_mut(&name).with_context(|| {
+                format!(
+                    "Unknown catalog `{name}` in --catalog-property (define it with --catalog or in config first)"
+                )
+            })?;
+            catalog.properties.insert(key, value);
+        }
+
+        Ok(())
     }
 
     /// Returns default config file paths in order of priority (lowest first)
@@ -154,42 +210,182 @@ impl Config {
             query: QueryConfig::default(),
         }
     }
+}
 
-    fn parse_catalog_uris(uris: Vec<String>) -> Result<HashMap<String, CatalogConfig>> {
-        let mut catalogs = HashMap::new();
+/// Parse catalog URI specs: `name=type:uri` or bare `uri` (defaults to rest / catalog_N)
+fn parse_catalog_uris(uris: &[String]) -> Result<HashMap<String, CatalogConfig>> {
+    let mut catalogs = HashMap::new();
 
-        for (idx, uri) in uris.into_iter().enumerate() {
-            // Simple URI parsing - format: name=type:uri or just uri (defaults to rest)
-            let (name, catalog_type, uri) = if uri.contains('=') {
-                let parts: Vec<&str> = uri.splitn(2, '=').collect();
-                let name = parts[0].to_string();
-                let rest = parts[1];
-
-                if rest.contains(':') {
-                    let type_uri: Vec<&str> = rest.splitn(2, ':').collect();
-                    (name, type_uri[0].to_string(), type_uri[1].to_string())
-                } else {
-                    (name, "rest".to_string(), rest.to_string())
-                }
+    for (idx, uri) in uris.iter().enumerate() {
+        let (name, catalog_type, uri) = if let Some((name, rest)) = uri.split_once('=') {
+            if let Some((catalog_type, uri)) = rest.split_once(':') {
+                (name.to_string(), catalog_type.to_string(), uri.to_string())
             } else {
-                (
-                    format!("catalog_{}", idx),
-                    "rest".to_string(),
-                    uri,
-                )
-            };
+                (name.to_string(), "rest".to_string(), rest.to_string())
+            }
+        } else {
+            (
+                format!("catalog_{}", idx),
+                "rest".to_string(),
+                uri.clone(),
+            )
+        };
 
-            catalogs.insert(
-                name,
-                CatalogConfig {
-                    catalog_type,
-                    uri,
-                    warehouse: None,
-                    properties: HashMap::new(),
-                },
-            );
+        catalogs.insert(
+            name,
+            CatalogConfig {
+                catalog_type,
+                uri,
+                warehouse: None,
+                properties: HashMap::new(),
+            },
+        );
+    }
+
+    Ok(catalogs)
+}
+
+/// Parse `name=value` pairs used by warehouse flags
+fn parse_name_value(spec: &str, flag: &str) -> Result<(String, String)> {
+    let Some((name, value)) = spec.split_once('=') else {
+        bail!("Invalid --{flag} `{spec}`: expected name=value");
+    };
+    if name.is_empty() || value.is_empty() {
+        bail!("Invalid --{flag} `{spec}`: name and value must be non-empty");
+    }
+    Ok((name.to_string(), value.to_string()))
+}
+
+/// Parse `name.key=value` property specs (key may contain dots, e.g. `s3.region`)
+fn parse_catalog_property(spec: &str) -> Result<(String, String, String)> {
+    let Some((name_key, value)) = spec.split_once('=') else {
+        bail!("Invalid --catalog-property `{spec}`: expected name.key=value");
+    };
+    let Some((name, key)) = name_key.split_once('.') else {
+        bail!("Invalid --catalog-property `{spec}`: expected name.key=value");
+    };
+    if name.is_empty() || key.is_empty() || value.is_empty() {
+        bail!("Invalid --catalog-property `{spec}`: name, key, and value must be non-empty");
+    }
+    Ok((name.to_string(), key.to_string(), value.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_cli() -> Cli {
+        Cli {
+            config: None,
+            verbose: false,
+            catalogs: vec![],
+            catalog_warehouses: vec![],
+            catalog_properties: vec![],
+            theme: None,
+            refresh_interval: None,
+            query_timeout: None,
+            max_rows: None,
+            command: None,
         }
+    }
 
-        Ok(catalogs)
+    #[test]
+    fn parse_catalog_uris_named_with_type() {
+        let catalogs =
+            parse_catalog_uris(&["local=rest:http://localhost:8181".to_string()]).unwrap();
+        let cat = catalogs.get("local").unwrap();
+        assert_eq!(cat.catalog_type, "rest");
+        assert_eq!(cat.uri, "http://localhost:8181");
+        assert!(cat.warehouse.is_none());
+    }
+
+    #[test]
+    fn parse_catalog_uris_bare_uri() {
+        let catalogs = parse_catalog_uris(&["http://localhost:8181".to_string()]).unwrap();
+        let cat = catalogs.get("catalog_0").unwrap();
+        assert_eq!(cat.catalog_type, "rest");
+        assert_eq!(cat.uri, "http://localhost:8181");
+    }
+
+    #[test]
+    fn parse_catalog_property_with_dotted_key() {
+        let (name, key, value) =
+            parse_catalog_property("prod.s3.access-key-id=AKIA123").unwrap();
+        assert_eq!(name, "prod");
+        assert_eq!(key, "s3.access-key-id");
+        assert_eq!(value, "AKIA123");
+    }
+
+    #[test]
+    fn parse_catalog_property_rejects_bad_format() {
+        assert!(parse_catalog_property("noequals").is_err());
+        assert!(parse_catalog_property("nodot=value").is_err());
+        assert!(parse_catalog_property(".key=value").is_err());
+    }
+
+    #[test]
+    fn cli_overrides_beat_defaults() {
+        let mut config = Config::default_config();
+        let mut cli = empty_cli();
+        cli.theme = Some("light".to_string());
+        cli.refresh_interval = Some(60);
+        cli.query_timeout = Some(120);
+        cli.max_rows = Some(500);
+        cli.catalogs = vec!["demo=rest:http://example:8181".to_string()];
+        cli.catalog_warehouses = vec!["demo=s3://wh".to_string()];
+        cli.catalog_properties = vec![
+            "demo.token=abc".to_string(),
+            "demo.s3.region=us-east-1".to_string(),
+        ];
+
+        config.apply_cli_overrides(&cli).unwrap();
+
+        assert_eq!(config.ui.theme, "light");
+        assert_eq!(config.ui.refresh_interval, 60);
+        assert_eq!(config.query.timeout, 120);
+        assert_eq!(config.query.max_rows, 500);
+
+        let cat = config.catalogs.get("demo").unwrap();
+        assert_eq!(cat.uri, "http://example:8181");
+        assert_eq!(cat.warehouse.as_deref(), Some("s3://wh"));
+        assert_eq!(cat.properties.get("token").map(String::as_str), Some("abc"));
+        assert_eq!(
+            cat.properties.get("s3.region").map(String::as_str),
+            Some("us-east-1")
+        );
+    }
+
+    #[test]
+    fn cli_catalog_updates_existing_without_wiping_properties() {
+        let mut config = Config::default_config();
+        config.catalogs.insert(
+            "demo".to_string(),
+            CatalogConfig {
+                catalog_type: "rest".to_string(),
+                uri: "http://old:8181".to_string(),
+                warehouse: Some("s3://old".to_string()),
+                properties: HashMap::from([("token".to_string(), "keep-me".to_string())]),
+            },
+        );
+
+        let mut cli = empty_cli();
+        cli.catalogs = vec!["demo=rest:http://new:8181".to_string()];
+        config.apply_cli_overrides(&cli).unwrap();
+
+        let cat = config.catalogs.get("demo").unwrap();
+        assert_eq!(cat.uri, "http://new:8181");
+        assert_eq!(cat.warehouse.as_deref(), Some("s3://old"));
+        assert_eq!(
+            cat.properties.get("token").map(String::as_str),
+            Some("keep-me")
+        );
+    }
+
+    #[test]
+    fn warehouse_for_unknown_catalog_errors() {
+        let mut config = Config::default_config();
+        let mut cli = empty_cli();
+        cli.catalog_warehouses = vec!["missing=s3://wh".to_string()];
+        assert!(config.apply_cli_overrides(&cli).is_err());
     }
 }
