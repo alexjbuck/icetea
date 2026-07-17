@@ -24,38 +24,26 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
+      # Prebuilt binary from GitHub Releases (much faster than cargo install)
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
 
       # Default cargo-audit: exit non-zero on vulnerabilities; warn (don't fail) on
       # informational advisories like unmaintained. Accepted vulns live in .cargo/audit.toml.
       - name: Run cargo audit
         run: |
           set -o pipefail
-          cargo audit --color=always 2>&1 | tee audit.log
+          cargo-audit --color=always 2>&1 | tee audit.log
 
       - name: Upload audit results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cargo-audit-results
           path: audit.log
