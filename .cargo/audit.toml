@@ -1,0 +1,11 @@
+# Project-local cargo-audit config.
+# See: https://github.com/rustsec/cargo-audit#ignoring-advisories
+
+[advisories]
+# Transitive via iceberg-storage-opendal → opendal 0.55 / reqsign 0.16.
+# DoS via malicious XML parsing; IceTea does not read XML objects from S3.
+# Revisit when iceberg-storage-opendal bumps to OpenDAL ≥0.58 (uses fixed quick-xml).
+ignore = [
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
