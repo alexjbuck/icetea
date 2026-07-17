@@ -39,7 +39,8 @@ jobs:
       - name: Run cargo audit
         run: |
           set -o pipefail
-          cargo-audit --color=always 2>&1 | tee audit.log
+          # Binary is a cargo-subcommand shim: must invoke `audit` explicitly.
+          cargo-audit audit --color=always 2>&1 | tee audit.log
 
       - name: Upload audit results
         if: always()
