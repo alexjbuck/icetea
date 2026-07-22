@@ -1,46 +1,54 @@
 # IceTea
 
-A Terminal User Interface (TUI) for interacting directly with Apache Iceberg catalogs.
+A terminal UI for poking around Apache Iceberg catalogs. Connect to one or more REST
+catalogs, browse namespaces and tables, and inspect table metadata without leaving the
+terminal.
 
-## Features
+## Status
 
-### MVP (Current Development)
-- ✅ Multi-catalog configuration support (env vars, config file, CLI args, in-app)
-- ✅ TUI scaffolding with ratatui
-- ✅ CLI interface with clap
-- ✅ Configuration management with figment
-- ✅ Connect to multiple catalogs simultaneously
-- ✅ Browse catalogs, namespaces, and tables in tree view
-- ✅ View table metadata (schema, partitioning, sort order, properties)
-- ⏳ View snapshot history as chain/log/tree
-- ⏳ Generate list of files in tables/partitions
-- ⏳ View list of partitions
-- ⏳ Execute SQL queries via DataFusion
+IceTea is early and under active development. Here's where things actually stand.
 
-### V2 (Planned)
-- Write support for table metadata
-- Partition/sort order evolution
-- Schema evolution
-- Table property updates
-- Create/drop branches and tags
+Working today:
 
-## Tech Stack
+- Connect to multiple REST catalogs at once (from a config file, env vars, CLI flags, or a
+  mix of all three)
+- Browse catalogs, namespaces, and tables in a tree
+- Inspect table metadata: schema, partition spec, sort order, properties, and current
+  snapshot info
+- A DataFusion-backed catalog provider that maps Iceberg catalogs/namespaces/tables onto
+  DataFusion's catalog abstraction (see [DataFusion integration](#datafusion-integration))
 
-- **CLI**: clap for argument parsing
-- **TUI**: ratatui for terminal UI
-- **Iceberg**: iceberg-rust for catalog integration
-- **SQL**: DataFusion for query execution
-- **Config**: figment for layered configuration
-- **Testing**: proptest for property-based testing
+Still in progress:
+
+- `icetea list` only prints the configured catalog names right now — it does not yet list
+  namespaces or tables
+- `icetea query` parses its arguments but does not execute anything yet
+- Snapshot history view, file/partition listing
+
+Planned for later:
+
+- Write support (schema/partition/sort-order evolution, property updates)
+- Branch and tag management
+- Glue/Hive catalog support
+
+## How it's built
+
+- **clap** for the CLI
+- **ratatui** + **crossterm** for the terminal UI
+- **iceberg-rust** (`iceberg`, `iceberg-catalog-rest`, `iceberg-storage-opendal`) for catalog
+  access
+- **DataFusion** for query execution (once it's wired up)
+- **figment** for layered configuration
+- **proptest** for property tests
+
+Exact versions live in `Cargo.toml`.
 
 ## Installation
 
-### Prerequisites
+You'll need a recent Rust toolchain (edition 2024, so Rust 1.94 or newer) and access to at
+least one Iceberg REST catalog.
 
-- Rust 1.75+ (uses 2024 edition)
-- Access to Apache Iceberg catalog(s)
-
-### Build from Source
+Build from source:
 
 ```bash
 git clone <repository-url>
@@ -48,21 +56,23 @@ cd icetea
 cargo build --release
 ```
 
-The binary will be at `target/release/icetea`.
+The binary lands at `target/release/icetea`.
 
 ## Configuration
 
-IceTea supports multiple configuration methods with the following precedence (highest to lowest):
+Configuration comes from four places. When the same setting shows up in more than one, the
+first one listed wins:
+
 1. Command-line arguments
 2. Environment variables
 3. Configuration file
-4. Defaults
+4. Built-in defaults
 
-Every setting in the config file can also be set via env vars or CLI flags.
+Anything you can put in the config file can also be set through an env var or a CLI flag.
 
-### Configuration File
+### Config file
 
-Create a `icetea.toml` file:
+Create an `icetea.toml`:
 
 ```toml
 [catalogs.my_rest_catalog]
@@ -71,7 +81,7 @@ uri = "http://localhost:8181"
 warehouse = "s3://my-bucket/warehouse"
 
 [catalogs.my_rest_catalog.properties]
-# Additional catalog properties
+# Anything the catalog needs, e.g. an auth token
 token = "my-auth-token"
 
 [ui]
@@ -83,113 +93,110 @@ timeout = 300  # seconds
 max_rows = 10000
 ```
 
-### Environment Variables
+The `[catalogs]` settings are what drive the app today. The `[ui]` and `[query]` values
+(`theme`, `refresh_interval`, `timeout`, `max_rows`) are accepted and validated but not wired
+into anything yet, so setting them currently has no visible effect. They're documented here so
+the config shape is stable as those features land.
 
-Nested keys use `__` as a separator (`ICETEA_` prefix):
+### Environment variables
+
+Everything is prefixed with `ICETEA_`, and nested keys use `__` as the separator:
 
 ```bash
 export ICETEA_CONFIG=/path/to/icetea.toml
 
-# UI / query
+# UI and query settings
 export ICETEA_UI__THEME=dark
 export ICETEA_UI__REFRESH_INTERVAL=30
 export ICETEA_QUERY__TIMEOUT=300
 export ICETEA_QUERY__MAX_ROWS=10000
 
-# Full nested catalog config
+# A fully specified catalog
 export ICETEA_CATALOGS__MY_REST_CATALOG__CATALOG_TYPE=rest
 export ICETEA_CATALOGS__MY_REST_CATALOG__URI=http://localhost:8181
 export ICETEA_CATALOGS__MY_REST_CATALOG__WAREHOUSE=s3://my-bucket/warehouse
 export ICETEA_CATALOGS__MY_REST_CATALOG__PROPERTIES__TOKEN=my-auth-token
+```
 
-# Convenience CLI-style encodings (comma-separated, same format as flags)
+If you'd rather not spell out the full nested form, there are comma-separated shorthands that
+match the CLI flags:
+
+```bash
 export ICETEA_CATALOG_URIS="my_rest_catalog=rest:http://localhost:8181"
 export ICETEA_CATALOG_WAREHOUSES="my_rest_catalog=s3://my-bucket/warehouse"
 export ICETEA_CATALOG_PROPERTIES="my_rest_catalog.token=my-auth-token"
 ```
 
-### Command-Line Arguments
+### Command-line flags
 
 ```bash
-# Start TUI with a fully specified catalog
+# Start the TUI with one fully specified catalog
 icetea \
   --catalog "my_catalog=rest:http://localhost:8181" \
   --catalog-warehouse "my_catalog=s3://my-bucket/warehouse" \
   --catalog-property "my_catalog.token=my-auth-token" \
   --catalog-property "my_catalog.credential=id:secret"
 
-# Multiple catalogs
+# Several catalogs at once (--catalog is repeatable)
 icetea \
   --catalog "cat1=rest:http://host1:8181" \
   --catalog "cat2=rest:http://host2:8181"
 
-# UI / query settings
+# UI and query settings
 icetea --theme light --refresh-interval 60 --query-timeout 120 --max-rows 500
 
-# Use config file
+# Point at a config file
 icetea --config /path/to/icetea.toml
-
-# Execute query from CLI
-icetea query "SELECT * FROM catalog.namespace.table LIMIT 10" --format table
-
-# List catalogs and tables
-icetea list
-icetea list my_catalog
 ```
+
+Other useful flags:
+
+- `-v`, `--verbose` — turn on verbose logging
+- `--log-file <FILE>` — where to write logs (defaults to
+  `$XDG_STATE_HOME/icetea/icetea.log`)
 
 ## Usage
 
-### TUI Mode
+### TUI
 
-Start the TUI:
+Run `icetea` with no subcommand to open the browser.
 
-```bash
-icetea
-```
+Keys:
 
-**Keyboard Shortcuts:**
-- `↑`/`↓` or `j`/`k` - Navigate tree
-- `←`/`→` or `h`/`l` - Collapse/expand nodes
-- `Enter` - Toggle expand/collapse
-- `q` - Quit application
-- `:` - Enter query mode
-- `?` - Show help
-- `ESC` - Return to browser
-- `Ctrl+C` - Force quit
+- `↑`/`↓` or `j`/`k` — move up and down the tree
+- `←`/`→` or `h`/`l` — collapse/expand a node
+- `Enter` — toggle expand/collapse
+- `:` — query mode
+- `?` — help
+- `Esc` — back to the browser
+- `q` — quit
+- `Ctrl+C` — force quit
 
-**Table Detail View:**
-When you select a table in the tree, the detail panel displays:
-- **Schema** - All fields with ID, name, type, and required status
-- **Partition Spec** - Partition columns with their transforms
-- **Sort Order** - Sort columns with direction and null ordering
-- **Properties** - Table configuration properties
-- **Snapshot Info** - Current snapshot ID and total count
+Select a table and the detail panel shows its schema (field ID, name, type, required flag),
+partition spec, sort order, properties, and current snapshot ID plus total snapshot count.
 
-### CLI Mode
+### CLI subcommands
+
+Two subcommands exist, but both are still partial (see [Status](#status)):
 
 ```bash
-# List catalogs
+# Prints the configured catalog names. Namespace/table listing is not done yet.
 icetea list
-
-# List tables in a catalog
 icetea list my_catalog
 
-# Execute SQL query
+# Accepts a query and format, but execution isn't wired up yet.
 icetea query "SELECT * FROM my_catalog.my_db.my_table LIMIT 10"
-
-# Query with output format
 icetea query "SELECT * FROM table" --format json
-icetea query "SELECT * FROM table" --format csv
 ```
 
-## Project Structure
+## Project layout
 
 ```
 src/
 ├── main.rs              # Entry point and event loop
 ├── app.rs               # Application state
 ├── cli.rs               # CLI argument definitions
-├── config.rs            # Configuration management
+├── config.rs            # Configuration loading
 ├── ui/                  # UI components
 │   ├── mod.rs
 │   ├── catalog_tree.rs  # Catalog browser tree
@@ -198,97 +205,80 @@ src/
 └── iceberg/             # Iceberg integration
     ├── mod.rs
     ├── catalog.rs       # Catalog management
-    ├── metadata.rs      # Metadata operations
+    ├── metadata.rs      # Metadata extraction
     └── query.rs         # DataFusion query execution
 ```
 
-## Development Status
+## DataFusion integration
 
-This is a greenfield project in active development. The current implementation provides:
+Rather than registering tables one at a time, IceTea plugs Iceberg into DataFusion's native
+catalog layer with a small set of providers:
 
-- ✅ Complete project scaffolding
-- ✅ TUI framework setup (ratatui 0.30)
-- ✅ Configuration management
-- ✅ CLI interface
-- ✅ Upgraded to iceberg-rust 0.7 + datafusion 45
-- ✅ REST catalog connection via RestCatalogBuilder
-- ✅ Custom DataFusion TableProvider for Iceberg tables
-- ✅ Tree-based catalog/namespace/table browsing
-- ✅ Table metadata display (schema, partitioning, sort order, properties)
+- `IcebergCatalogProvider` wraps an Iceberg catalog as a DataFusion catalog
+- `IcebergSchemaProvider` maps Iceberg namespaces to DataFusion schemas
+- `IcebergTableProvider` bridges a single Iceberg table
+- Schema conversion covers the full Iceberg type system: primitives, structs, lists, and maps
 
-**Note**: Now using iceberg-rust v0.7 with proper REST catalog integration. The `RestCatalogBuilder` pattern is used to create catalog connections with full configuration support.
+Once a catalog is registered, DataFusion discovers its namespaces and tables on its own, so a
+query is just:
 
-**DataFusion Integration**: Implemented a complete catalog-level integration with DataFusion using custom providers:
-
-Architecture:
-- `IcebergCatalogProvider` - Wraps Iceberg catalogs as DataFusion catalog providers
-- `IcebergSchemaProvider` - Maps Iceberg namespaces to DataFusion schemas
-- `IcebergTableProvider` - Bridges individual Iceberg tables to DataFusion
-- Full Iceberg-to-Arrow schema conversion supporting all types (primitives, structs, lists, maps)
-
-This design leverages DataFusion's native catalog abstraction layer. After registering a catalog, tables can be queried using SQL:
 ```sql
 SELECT * FROM catalog.namespace.table_name
 ```
 
-DataFusion automatically discovers namespaces and tables through the provider interfaces, eliminating the need to manually register individual tables.
-
-**Note**: The `datafusion_iceberg` v0.7 crate is incompatible with `iceberg` v0.7 (built against the older `iceberg_rust` crate), so we implemented our own custom integration following DataFusion's catalog provider pattern.
+We rolled our own integration because the `datafusion_iceberg` crate targets the older
+`iceberg_rust` crate and doesn't line up with the `iceberg` version we depend on.
 
 ## Releasing
 
-Version bumps and changelog entries come from [knope](https://knope.tech) **changesets** only (not conventional commits).
+Version bumps and changelog entries come from [knope](https://knope.tech) changesets, not from
+conventional commits.
 
-Install tools with [mise](https://mise.jdx.dev) (includes `cargo:knope`):
+Install the tooling with [mise](https://mise.jdx.dev) (it pulls in `cargo:knope`):
 
 ```bash
 mise install
 ```
 
-### Document a change
-
-When a PR includes a user-facing change, create a changeset:
+When a PR includes a user-facing change, record it with a changeset and commit the generated
+file alongside the PR:
 
 ```bash
-knope document-change
+knope document-change   # writes a Markdown file under .changeset/
 ```
 
-This writes a Markdown file under `.changeset/`. Commit it with the PR.
-
-### Dry-run a release
+To preview what a release would do:
 
 ```bash
 knope release --dry-run
 ```
 
-### Publish a GitHub Release
-
-In GitHub Actions, run the **Release** workflow (`workflow_dispatch`). It uses the built-in `GITHUB_TOKEN` with `contents: write` to push the release commit/tag and create the GitHub Release — no PAT secret required.
-
-Alternatively, locally with a token that can write contents:
+To actually cut a release, run the **Release** workflow in GitHub Actions
+(`workflow_dispatch`). It uses the built-in `GITHUB_TOKEN` with `contents: write` to push the
+release commit and tag and create the GitHub Release, so no PAT secret is needed. You can also
+run it locally with a token that can write contents:
 
 ```bash
 GITHUB_TOKEN=... knope release
 ```
 
-This consumes pending changesets, bumps `Cargo.toml` / `Cargo.lock`, updates `CHANGELOG.md`, pushes a release commit, and creates a GitHub Release. crates.io publishing is not configured yet.
+Either way, knope consumes the pending changesets, bumps `Cargo.toml` and `Cargo.lock`, updates
+`CHANGELOG.md`, and publishes the release. Publishing to crates.io isn't set up yet.
 
 ## Contributing
 
-Contributions are welcome! Areas that need work:
+Contributions are welcome. The areas that need the most help right now:
 
-1. **Iceberg Integration**: Completing catalog connection and table operations
-2. **DataFusion Integration**: Implementing TableProvider for Iceberg tables
-3. **UI Enhancements**: Improving the TUI with better navigation and views
-4. **Testing**: Adding unit tests and property tests
-5. **Documentation**: Expanding examples and use cases
+- Finishing catalog operations (namespace/table listing behind `icetea list`)
+- Wiring up query execution through DataFusion
+- Filling out the TUI: snapshot history, file and partition views
+- Tests, especially around metadata extraction and config parsing
 
 ## License
 
-MIT License - see LICENSE file for details.
+MIT. See the [LICENSE](LICENSE) file.
 
 ## Acknowledgments
 
-- Apache Iceberg team for the excellent table format
-- ratatui team for the amazing TUI framework
-- iceberg-rust contributors for Rust bindings
+Built on the Apache Iceberg project, ratatui, and iceberg-rust. Thanks to everyone who
+maintains them.
