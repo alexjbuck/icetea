@@ -109,8 +109,8 @@ where
     loop {
         terminal.draw(|f| ui::render(f, app))?;
 
-        if event::poll(std::time::Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
+        if event::poll(std::time::Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()? {
                 // Handle Ctrl+C to quit
                 if key.code == KeyCode::Char('c')
                     && key.modifiers.contains(event::KeyModifiers::CONTROL)
@@ -124,7 +124,6 @@ where
                     app.rebuild_tree().await;
                 }
             }
-        }
 
         // Apply any completed background stats (non-blocking)
         app.poll_stats();

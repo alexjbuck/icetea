@@ -224,8 +224,8 @@ impl CatalogManager {
         let mut request = client.get(&url);
 
         // Add OAuth2 token if credentials are provided
-        if let Some(credential) = catalog_config.properties.get("credential") {
-            if let Some(token_url) = catalog_config.properties.get("oauth2-server-uri") {
+        if let Some(credential) = catalog_config.properties.get("credential")
+            && let Some(token_url) = catalog_config.properties.get("oauth2-server-uri") {
                 match get_oauth2_token(
                     token_url,
                     credential,
@@ -241,7 +241,6 @@ impl CatalogManager {
                     }
                 }
             }
-        }
 
         let response = request.send().await.context("Failed to fetch table")?;
 
@@ -292,8 +291,8 @@ async fn fetch_catalog_config(
     let mut request = client.get(config_url);
 
     // Add OAuth2 token if credentials are provided
-    if let Some(credential) = auth_properties.get("credential") {
-        if let Some(token_url) = auth_properties.get("oauth2-server-uri") {
+    if let Some(credential) = auth_properties.get("credential")
+        && let Some(token_url) = auth_properties.get("oauth2-server-uri") {
             tracing::debug!("Obtaining OAuth2 token from: {}", token_url);
             // Get OAuth2 token
             match get_oauth2_token(token_url, credential, auth_properties.get("scope")).await {
@@ -306,7 +305,6 @@ async fn fetch_catalog_config(
                 }
             }
         }
-    }
 
     let response = request
         .send()

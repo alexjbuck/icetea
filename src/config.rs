@@ -234,15 +234,14 @@ impl Config {
         }
 
         let path = Self::default_log_path();
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            if let Err(err) = std::fs::create_dir_all(parent) {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty())
+            && let Err(err) = std::fs::create_dir_all(parent) {
                 eprintln!(
                     "warning: could not create log directory {}: {err}; falling back to ./icetea.log",
                     parent.display()
                 );
                 return open_cwd_log();
             }
-        }
 
         match OpenOptions::new().create(true).append(true).open(&path) {
             Ok(file) => Ok((file, path)),

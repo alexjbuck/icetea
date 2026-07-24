@@ -77,7 +77,7 @@ fn extract_field_info(field: &iceberg::spec::NestedFieldRef) -> FieldInfo {
         Type::Struct(struct_type) => {
             struct_type.fields()
                 .iter()
-                .map(|nested_field| extract_field_info(nested_field))
+                .map(extract_field_info)
                 .collect()
         }
         Type::List(list_type) => {
@@ -120,16 +120,16 @@ fn extract_field_info(field: &iceberg::spec::NestedFieldRef) -> FieldInfo {
     }
 }
 
-/// Extract nested fields from a type (handles Box<Type>)
-fn extract_nested_from_type(field_type: &Box<iceberg::spec::Type>) -> Vec<FieldInfo> {
+/// Extract nested fields from a type.
+fn extract_nested_from_type(field_type: &iceberg::spec::Type) -> Vec<FieldInfo> {
     use iceberg::spec::Type;
 
-    match field_type.as_ref() {
+    match field_type {
         Type::Primitive(_) => Vec::new(),
         Type::Struct(struct_type) => {
             struct_type.fields()
                 .iter()
-                .map(|nested_field| extract_field_info(nested_field))
+                .map(extract_field_info)
                 .collect()
         }
         Type::List(list_type) => {
@@ -176,7 +176,7 @@ impl TableMetadata {
                 .as_struct()
                 .fields()
                 .iter()
-                .map(|field| extract_field_info(field))
+                .map(extract_field_info)
                 .collect(),
         };
 

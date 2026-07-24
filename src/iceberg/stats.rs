@@ -612,7 +612,7 @@ async fn count_partitions_parallel(
         if let Ok(parts) = result {
             partitions.extend(parts);
         }
-        if done % 5 == 0 || done == total {
+        if done.is_multiple_of(5) || done == total {
             on_tick(done, total);
         }
     }
@@ -709,7 +709,7 @@ async fn collect_orphan_stats(
                     "Failed to load any of the first {lists_done} manifest lists from storage"
                 );
             }
-            if lists_done % 2 == 0 || lists_done == total_lists {
+            if lists_done.is_multiple_of(2) || lists_done == total_lists {
                 on_tick(lists_done, total_lists, "orphans (lists)");
             }
         }
@@ -759,7 +759,7 @@ async fn collect_orphan_stats(
                     warn!("Orphan scan: failed to load manifest {}: {}", path, e);
                 }
             }
-            if manifests_done % 10 == 0 || manifests_done == total_manifests {
+            if manifests_done.is_multiple_of(10) || manifests_done == total_manifests {
                 on_tick(manifests_done, total_manifests, "orphans (manifests)");
             }
         }
@@ -1045,21 +1045,18 @@ fn s3_config_from_props(mut props: HashMap<String, String>) -> S3Config {
         let truthy = ["true", "t", "1", "on"].contains(&v.to_lowercase().as_str());
         cfg.enable_virtual_host_style = !truthy;
     }
-    if let Some(v) = props.remove("s3.allow-anonymous") {
-        if ["true", "t", "1", "on"].contains(&v.to_lowercase().as_str()) {
+    if let Some(v) = props.remove("s3.allow-anonymous")
+        && ["true", "t", "1", "on"].contains(&v.to_lowercase().as_str()) {
             cfg.skip_signature = true;
         }
-    }
-    if let Some(v) = props.remove("s3.disable-ec2-metadata") {
-        if ["true", "t", "1", "on"].contains(&v.to_lowercase().as_str()) {
+    if let Some(v) = props.remove("s3.disable-ec2-metadata")
+        && ["true", "t", "1", "on"].contains(&v.to_lowercase().as_str()) {
             cfg.disable_ec2_metadata = true;
         }
-    }
-    if let Some(v) = props.remove("s3.disable-config-load") {
-        if ["true", "t", "1", "on"].contains(&v.to_lowercase().as_str()) {
+    if let Some(v) = props.remove("s3.disable-config-load")
+        && ["true", "t", "1", "on"].contains(&v.to_lowercase().as_str()) {
             cfg.disable_config_load = true;
         }
-    }
 
     // IceTea is a local TUI — never probe EC2 instance metadata (hangs for minutes).
     cfg.disable_ec2_metadata = true;

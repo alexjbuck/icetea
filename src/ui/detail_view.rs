@@ -122,8 +122,8 @@ fn render_catalog_details(name: &str, connected: bool, app: &App) -> Vec<Line<'s
         }
 
         // Show server-provided configuration (from /v1/config endpoint)
-        if let Some(server_config) = app.catalog_manager.get_catalog_config(name) {
-            if !server_config.is_empty() {
+        if let Some(server_config) = app.catalog_manager.get_catalog_config(name)
+            && !server_config.is_empty() {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     "━━━ Server Configuration ━━━",
@@ -140,7 +140,6 @@ fn render_catalog_details(name: &str, connected: bool, app: &App) -> Vec<Line<'s
                     ]));
                 }
             }
-        }
 
         // Show client properties if any
         if !catalog_config.properties.is_empty() {
@@ -581,8 +580,8 @@ fn render_table_metadata_content(name: &str, key: &str, app: &App) -> Vec<Line<'
             ]));
         }
 
-        if let Some(s) = snap {
-            if !s.manifest_list_path.is_empty() && s.manifest_list_size.is_some() {
+        if let Some(s) = snap
+            && !s.manifest_list_path.is_empty() && s.manifest_list_size.is_some() {
                 lines.push(Line::from(vec![
                     Span::styled("  list path: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(
@@ -591,7 +590,6 @@ fn render_table_metadata_content(name: &str, key: &str, app: &App) -> Vec<Line<'
                     ),
                 ]));
             }
-        }
 
         lines.push(Line::from(""));
 

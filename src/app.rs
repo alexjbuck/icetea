@@ -226,9 +226,9 @@ impl App {
             });
 
             // If expanded and connected, show namespaces
-            if self.expanded.contains(&key) && connected {
-                if let Some(catalog) = self.catalog_manager.get_catalog(name) {
-                    if let Ok(namespaces) = catalog.list_namespaces(None).await {
+            if self.expanded.contains(&key) && connected
+                && let Some(catalog) = self.catalog_manager.get_catalog(name)
+                    && let Ok(namespaces) = catalog.list_namespaces(None).await {
                         for ns in namespaces {
                             let ns_name = ns.as_ref().join(".");
                             let ns_key = format!("{}/{}", name, ns_name);
@@ -242,8 +242,8 @@ impl App {
                             });
 
                             // If namespace is expanded, show tables
-                            if self.expanded.contains(&ns_key) {
-                                if let Ok(tables) = catalog.list_tables(&ns).await {
+                            if self.expanded.contains(&ns_key)
+                                && let Ok(tables) = catalog.list_tables(&ns).await {
                                     for table_ident in tables {
                                         let table_name = table_ident.name().to_string();
                                         let table_key = format!("{}/{}", ns_key, table_name);
@@ -257,11 +257,8 @@ impl App {
                                         });
                                     }
                                 }
-                            }
                         }
                     }
-                }
-            }
         }
 
         // Clamp selected index
@@ -272,8 +269,8 @@ impl App {
 
     /// Toggle expansion of the selected item
     pub fn toggle_selected(&mut self) -> bool {
-        if let Some(item) = self.tree_items.get(self.selected_index) {
-            if item.expandable {
+        if let Some(item) = self.tree_items.get(self.selected_index)
+            && item.expandable {
                 let key = item.key.clone();
                 if self.expanded.contains(&key) {
                     self.expanded.remove(&key);
@@ -282,7 +279,6 @@ impl App {
                 }
                 return true; // Need to rebuild tree
             }
-        }
         false
     }
 
@@ -366,12 +362,11 @@ impl App {
 
     /// Expand selected item
     pub fn expand_selected(&mut self) -> bool {
-        if let Some(item) = self.tree_items.get(self.selected_index) {
-            if item.expandable && !self.expanded.contains(&item.key) {
+        if let Some(item) = self.tree_items.get(self.selected_index)
+            && item.expandable && !self.expanded.contains(&item.key) {
                 self.expanded.insert(item.key.clone());
                 return true;
             }
-        }
         false
     }
 
@@ -419,14 +414,13 @@ impl App {
                 match TableMetadata::from_table(&table) {
                     Ok(mut metadata) => {
                         // Fetch storage config from the REST API
-                        if let Some(catalog_config) = self.config.catalogs.get(catalog_name) {
-                            if let Ok(storage_config) = self.catalog_manager
+                        if let Some(catalog_config) = self.config.catalogs.get(catalog_name)
+                            && let Ok(storage_config) = self.catalog_manager
                                 .fetch_table_storage_config(catalog_name, catalog_config, namespace, table_name)
                                 .await
                             {
                                 metadata.storage_properties = storage_config;
                             }
-                        }
 
                         self.selected_table_metadata = Some(metadata);
                         self.cached_table_key = Some(item.key.clone());
@@ -549,11 +543,10 @@ impl App {
 
     /// Clear cached table metadata (called when selection changes)
     pub fn clear_table_metadata_if_needed(&mut self) {
-        if let Some(item) = self.selected_item() {
-            if self.cached_table_key.as_ref() != Some(&item.key) {
+        if let Some(item) = self.selected_item()
+            && self.cached_table_key.as_ref() != Some(&item.key) {
                 self.selected_table_metadata = None;
             }
-        }
     }
 
     /// Handle keyboard input (synchronous part)
