@@ -63,7 +63,7 @@ impl CatalogManager {
                     .entry("s3.disable-ec2-metadata".to_string())
                     .or_insert_with(|| "true".to_string());
 
-                // Iceberg 0.9 requires an explicit StorageFactory for FileIO.
+                // Iceberg requires an explicit StorageFactory for FileIO.
                 let storage_factory = storage_factory_for_uri(config.warehouse.as_deref());
 
                 // Create REST catalog using the builder
@@ -76,7 +76,8 @@ impl CatalogManager {
                 let iceberg_catalog: Arc<dyn Catalog> = Arc::new(rest_catalog);
 
                 // Create DataFusion catalog provider wrapping the Iceberg catalog
-                let df_catalog_provider = Arc::new(IcebergCatalogProvider::new(iceberg_catalog.clone()));
+                let df_catalog_provider =
+                    Arc::new(IcebergCatalogProvider::new(iceberg_catalog.clone()));
 
                 // Fetch catalog configuration from the /v1/config endpoint
                 // This includes defaults like S3 endpoint that the server provides
@@ -84,22 +85,31 @@ impl CatalogManager {
 
                 // Add warehouse parameter if specified
                 if let Some(warehouse) = &config.warehouse {
-                    config_url = format!("{}?warehouse={}", config_url, urlencoding::encode(warehouse));
+                    config_url = format!(
+                        "{}?warehouse={}",
+                        config_url,
+                        urlencoding::encode(warehouse)
+                    );
                 }
 
-                let server_config = match fetch_catalog_config(&config_url, &config.properties).await {
-                    Ok(cfg) => {
-                        tracing::info!("Fetched catalog config for {}: {} properties", name, cfg.len());
-                        for (k, v) in &cfg {
-                            tracing::debug!("  Server config property: {} = {}", k, v);
+                let server_config =
+                    match fetch_catalog_config(&config_url, &config.properties).await {
+                        Ok(cfg) => {
+                            tracing::info!(
+                                "Fetched catalog config for {}: {} properties",
+                                name,
+                                cfg.len()
+                            );
+                            for (k, v) in &cfg {
+                                tracing::debug!("  Server config property: {} = {}", k, v);
+                            }
+                            cfg
                         }
-                        cfg
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to fetch catalog config for {}: {}", name, e);
-                        HashMap::new()
-                    }
-                };
+                        Err(e) => {
+                            tracing::warn!("Failed to fetch catalog config for {}: {}", name, e);
+                            HashMap::new()
+                        }
+                    };
 
                 // Store all information
                 self.catalogs.insert(name.clone(), iceberg_catalog);
@@ -150,11 +160,7 @@ impl CatalogManager {
     }
 
     /// List tables in a namespace
-    pub async fn list_tables(
-        &self,
-        catalog_name: &str,
-        namespace: &str,
-    ) -> Result<Vec<String>> {
+    pub async fn list_tables(&self, catalog_name: &str, namespace: &str) -> Result<Vec<String>> {
         let catalog = self
             .get_catalog(catalog_name)
             .context("Catalog not found")?;
@@ -220,7 +226,13 @@ impl CatalogManager {
         // Add OAuth2 token if credentials are provided
         if let Some(credential) = catalog_config.properties.get("credential") {
             if let Some(token_url) = catalog_config.properties.get("oauth2-server-uri") {
-                match get_oauth2_token(token_url, credential, catalog_config.properties.get("scope")).await {
+                match get_oauth2_token(
+                    token_url,
+                    credential,
+                    catalog_config.properties.get("scope"),
+                )
+                .await
+                {
                     Ok(token) => {
                         request = request.bearer_auth(token);
                     }
@@ -246,9 +258,15 @@ impl CatalogManager {
             config: HashMap<String, String>,
         }
 
-        let result: LoadTableResult = response.json().await.context("Failed to parse table response")?;
+        let result: LoadTableResult = response
+            .json()
+            .await
+            .context("Failed to parse table response")?;
 
-        tracing::debug!("Got {} storage config properties from table", result.config.len());
+        tracing::debug!(
+            "Got {} storage config properties from table",
+            result.config.len()
+        );
         for (k, v) in &result.config {
             tracing::debug!("  Table storage config: {} = {}", k, v);
         }
@@ -290,7 +308,10 @@ async fn fetch_catalog_config(
         }
     }
 
-    let response = request.send().await.context("Failed to fetch catalog config")?;
+    let response = request
+        .send()
+        .await
+        .context("Failed to fetch catalog config")?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -309,7 +330,10 @@ async fn fetch_catalog_config(
         overrides: HashMap<String, String>,
     }
 
-    let config_response: ConfigResponse = response.json().await.context("Failed to parse config response")?;
+    let config_response: ConfigResponse = response
+        .json()
+        .await
+        .context("Failed to parse config response")?;
 
     // Merge defaults and overrides
     let mut config = config_response.defaults;
@@ -319,7 +343,11 @@ async fn fetch_catalog_config(
 }
 
 /// Get OAuth2 access token
-async fn get_oauth2_token(token_url: &str, credential: &str, scope: Option<&String>) -> Result<String> {
+async fn get_oauth2_token(
+    token_url: &str,
+    credential: &str,
+    scope: Option<&String>,
+) -> Result<String> {
     // Parse credential as client_id:client_secret
     let parts: Vec<&str> = credential.split(':').collect();
     if parts.len() != 2 {
@@ -360,7 +388,10 @@ async fn get_oauth2_token(token_url: &str, credential: &str, scope: Option<&Stri
         access_token: String,
     }
 
-    let token_response: TokenResponse = response.json().await.context("Failed to parse token response")?;
+    let token_response: TokenResponse = response
+        .json()
+        .await
+        .context("Failed to parse token response")?;
 
     Ok(token_response.access_token)
 }
@@ -373,12 +404,7 @@ pub(crate) fn storage_factory_for_uri(uri: Option<&str>) -> Arc<dyn StorageFacto
 
     match scheme {
         "file" | "fs" => Arc::new(OpenDalStorageFactory::Fs),
-        "s3a" | "s3n" => Arc::new(OpenDalStorageFactory::S3 {
-            configured_scheme: scheme.to_string(),
-            customized_credential_load: None,
-        }),
         _ => Arc::new(OpenDalStorageFactory::S3 {
-            configured_scheme: "s3".to_string(),
             customized_credential_load: None,
         }),
     }

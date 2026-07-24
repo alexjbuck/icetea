@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use futures::stream::{self, StreamExt};
 use iceberg::io::{FileIO, FileIOBuilder};
-use iceberg::spec::{ManifestContentType, Struct};
+use iceberg::spec::{ManifestContentType, ManifestList, Snapshot, Struct, TableMetadata};
 use iceberg::table::Table;
 use opendal::EntryMode;
 use opendal::Operator;
@@ -12,6 +12,20 @@ use std::collections::{HashMap, HashSet};
 use tracing::{debug, info, warn};
 
 use crate::iceberg::catalog::storage_factory_for_uri;
+
+/// Load and parse a snapshot's manifest list.
+///
+/// Replaces `Snapshot::load_manifest_list`, which was removed in iceberg 0.10:
+/// read the manifest-list Avro file via `file_io`, then parse it using the
+/// table's format version.
+async fn load_manifest_list(
+    file_io: &FileIO,
+    snapshot: &Snapshot,
+    metadata: &TableMetadata,
+) -> Result<ManifestList> {
+    let bytes = file_io.new_input(snapshot.manifest_list())?.read().await?;
+    ManifestList::parse_with_version(&bytes, metadata.format_version()).map_err(Into::into)
+}
 #[derive(Debug, Clone)]
 pub struct StatsProgress {
     /// Short phase name shown in the UI.
@@ -178,10 +192,7 @@ pub fn collect_sync_stats(table: &Table) -> TableStats {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        summary_map.insert(
-            "operation".to_string(),
-            format!("{:?}", summary.operation),
-        );
+        summary_map.insert("operation".to_string(), format!("{:?}", summary.operation));
 
         stats.current_snapshot = Some(SnapshotStats {
             snapshot_id: snapshot.snapshot_id(),
@@ -333,13 +344,7 @@ pub async fn collect_table_stats(
         let phase2 = std::time::Instant::now();
         match count_partitions_parallel(table, &file_io, snapshot.as_ref(), |done, total| {
             if done % 5 == 0 || done == total {
-                emit(
-                    &mut on_progress,
-                    "partitions",
-                    done,
-                    Some(total),
-                    &stats,
-                );
+                emit(&mut on_progress, "partitions", done, Some(total), &stats);
             }
         })
         .await
@@ -371,13 +376,7 @@ pub async fn collect_table_stats(
     }
 
     // --- Phase 3: orphan scan (also yields metadata file sizes from listing) ---
-    emit(
-        &mut on_progress,
-        "orphans (lists)",
-        0,
-        None,
-        &stats,
-    );
+    emit(&mut on_progress, "orphans (lists)", 0, None, &stats);
 
     let phase3 = std::time::Instant::now();
     match collect_orphan_stats(table, &file_io, |done, total, phase| {
@@ -389,7 +388,9 @@ pub async fn collect_table_stats(
             stats.orphans = Some(orphans);
             if let Some(current) = table.metadata_location() {
                 let norm_current = normalize_path(current);
-                if let Some((_, size)) = meta_sizes.iter().find(|(p, _)| normalize_path(p) == norm_current)
+                if let Some((_, size)) = meta_sizes
+                    .iter()
+                    .find(|(p, _)| normalize_path(p) == norm_current)
                 {
                     stats.current_metadata_size = Some(*size);
                 }
@@ -400,7 +401,11 @@ pub async fn collect_table_stats(
             info!(
                 "Stats phase 3 done in {:?}: accessible data {} ({}), orphan data {} ({}), total on storage {}",
                 phase3.elapsed(),
-                stats.orphans.as_ref().map(|o| o.accessible_data_count).unwrap_or(0),
+                stats
+                    .orphans
+                    .as_ref()
+                    .map(|o| o.accessible_data_count)
+                    .unwrap_or(0),
                 stats
                     .orphans
                     .as_ref()
@@ -466,19 +471,13 @@ fn resolve_file_io(table: &Table, storage_props: &HashMap<String, String>) -> Re
 
 fn apply_env_s3_creds(props: &mut HashMap<String, String>) {
     if let Ok(v) = std::env::var("AWS_ACCESS_KEY_ID") {
-        props
-            .entry("s3.access-key-id".to_string())
-            .or_insert(v);
+        props.entry("s3.access-key-id".to_string()).or_insert(v);
     }
     if let Ok(v) = std::env::var("AWS_SECRET_ACCESS_KEY") {
-        props
-            .entry("s3.secret-access-key".to_string())
-            .or_insert(v);
+        props.entry("s3.secret-access-key".to_string()).or_insert(v);
     }
     if let Ok(v) = std::env::var("AWS_SESSION_TOKEN") {
-        props
-            .entry("s3.session-token".to_string())
-            .or_insert(v);
+        props.entry("s3.session-token".to_string()).or_insert(v);
     }
     if let Ok(v) = std::env::var("AWS_REGION").or_else(|_| std::env::var("AWS_DEFAULT_REGION")) {
         props.entry("s3.region".to_string()).or_insert(v);
@@ -529,8 +528,7 @@ async fn enrich_snapshot_from_manifest_list(
     );
 
     let t_load = std::time::Instant::now();
-    let manifest_list = snapshot
-        .load_manifest_list(file_io, metadata)
+    let manifest_list = load_manifest_list(file_io, snapshot, metadata)
         .await
         .context("Failed to load manifest list")?;
     info!(
@@ -567,8 +565,7 @@ async fn count_partitions_parallel(
 ) -> Result<usize> {
     let metadata = table.metadata();
 
-    let manifest_list = snapshot
-        .load_manifest_list(file_io, metadata)
+    let manifest_list = load_manifest_list(file_io, snapshot, metadata)
         .await
         .context("Failed to load manifest list for partitions")?;
 
@@ -677,9 +674,7 @@ async fn collect_orphan_stats(
             let file_io = file_io.clone();
             let table = table.clone();
             async move {
-                let result = snap
-                    .load_manifest_list(&file_io, table.metadata())
-                    .await;
+                let result = load_manifest_list(&file_io, &snap, table.metadata()).await;
                 (path, result)
             }
         }))
@@ -941,11 +936,7 @@ fn absolute_from_relative(scheme: &str, table_location: &str, relative: &str) ->
             let bucket = parse_location(table_location)
                 .map(|(_, auth, _)| auth)
                 .unwrap_or_default();
-            format!(
-                "s3://{}/{}",
-                bucket,
-                relative.trim_start_matches('/')
-            )
+            format!("s3://{}/{}", bucket, relative.trim_start_matches('/'))
         }
         "file" | "fs" | "" => {
             let path = if relative.starts_with('/') {
@@ -955,20 +946,12 @@ fn absolute_from_relative(scheme: &str, table_location: &str, relative: &str) ->
             };
             format!("file://{}", path)
         }
-        other => format!(
-            "{}://{}",
-            other,
-            relative.trim_start_matches('/')
-        ),
+        other => format!("{}://{}", other, relative.trim_start_matches('/')),
     }
 }
 
 fn scheme_of(location: &str) -> String {
-    location
-        .split("://")
-        .next()
-        .unwrap_or("")
-        .to_string()
+    location.split("://").next().unwrap_or("").to_string()
 }
 
 /// Parse `scheme://authority/path` into (scheme, authority/bucket, path).
@@ -1000,13 +983,17 @@ fn build_operator_for_path(
                 .with_context(|| format!("Invalid S3 path: {}", prefix))?;
             let mut cfg = s3_config_from_props(props);
             cfg.bucket = bucket;
-            let op = Operator::from_config(cfg).context("Failed to build S3 operator")?;
+            let op = Operator::from_config(cfg)
+                .context("Failed to build S3 operator")?
+                .finish();
             Ok((op, relative))
         }
         "file" | "fs" | "" => {
             let mut cfg = FsConfig::default();
             cfg.root = Some("/".to_string());
-            let op = Operator::from_config(cfg).context("Failed to build FS operator")?;
+            let op = Operator::from_config(cfg)
+                .context("Failed to build FS operator")?
+                .finish();
             let relative = strip_file_scheme(prefix)
                 .trim_start_matches('/')
                 .to_string();
@@ -1048,7 +1035,10 @@ fn s3_config_from_props(mut props: HashMap<String, String>) -> S3Config {
     if let Some(v) = props.remove("s3.session-token") {
         cfg.session_token = Some(v);
     }
-    if let Some(v) = props.remove("s3.region").or_else(|| props.remove("client.region")) {
+    if let Some(v) = props
+        .remove("s3.region")
+        .or_else(|| props.remove("client.region"))
+    {
         cfg.region = Some(v);
     }
     if let Some(v) = props.remove("s3.path-style-access") {
@@ -1119,10 +1109,7 @@ mod tests {
 
     #[test]
     fn normalize_path_unifies_schemes() {
-        assert_eq!(
-            normalize_path("s3a://bucket/path/"),
-            "s3://bucket/path"
-        );
+        assert_eq!(normalize_path("s3a://bucket/path/"), "s3://bucket/path");
         assert_eq!(
             normalize_path("file:///tmp/table/data/file.parquet"),
             "file:///tmp/table/data/file.parquet"
